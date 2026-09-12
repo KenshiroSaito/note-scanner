@@ -1,0 +1,12 @@
+{
+  "name": "note-scanner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Converts photos of class notes into structured Markdown",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "serve": "node scripts/serve.js"
+  },
+  "license": "MIT"
+}
