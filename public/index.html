@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>note-scanner</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page__header">
+        <h1>note-scanner</h1>
+        <p class="page__lead">
+          Turn photos of whiteboards, slides, and handwritten notes into structured text.
+        </p>
+      </header>
+
+      <section
+        id="dropzone"
+        class="dropzone"
+        aria-labelledby="dropzone-heading"
+      >
+        <h2 id="dropzone-heading" class="dropzone__heading">Drop images here</h2>
+        <p class="dropzone__hint">JPEG, PNG, or HEIC — up to 25 per run.</p>
+        <label class="button">
+          Choose images
+          <input
+            id="file-input"
+            class="visually-hidden"
+            type="file"
+            multiple
+            accept="image/jpeg,image/png,image/heic,image/heif,.jpg,.jpeg,.png,.heic,.heif"
+          />
+        </label>
+      </section>
+
+      <section class="selection" aria-labelledby="selection-heading">
+        <div class="selection__bar">
+          <h2 id="selection-heading" class="selection__heading">
+            Selected
+            <span id="counter" class="counter" aria-live="polite">0 / 25</span>
+          </h2>
+          <button id="clear" class="button button--quiet" type="button" disabled>
+            Clear all
+          </button>
+        </div>
+
+        <ul id="thumbnails" class="thumbnails"></ul>
+        <p id="empty-state" class="empty-state">No images selected yet.</p>
+
+        <div id="errors" class="errors" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="actions">
+        <button id="convert" class="button button--primary" type="button" disabled>
+          Convert
+        </button>
+        <p class="actions__note">
+          Phase 1 skeleton: this shows sample output and makes no network request.
+        </p>
+      </section>
+
+      <section id="output" class="output" aria-labelledby="output-heading" hidden>
+        <h2 id="output-heading">Result</h2>
+        <p class="output__note">
+          Dummy data in the schema from <code>docs/spec.md</code> section 5.
+        </p>
+        <pre id="output-json" class="output__json"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
