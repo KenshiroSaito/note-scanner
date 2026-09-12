@@ -1,10 +1,15 @@
 /**
- * Phase 1 skeleton: image selection and preview.
+ * Phase 1 skeleton: image selection, normalization, and preview.
+ *
+ * The drop zone is a normalization boundary — every accepted file is decoded,
+ * oriented, resized, and re-encoded as JPEG before it enters the selection, so
+ * previews show exactly what phase 2 will upload.
  *
  * Deliberately makes no network request. Pressing Convert renders dummy data
  * in the schema the backend will return in phase 2.
  */
-import { MAX_IMAGES, dedupe, needsPlaceholder, validateSelection } from './lib/validation.js';
+import { MAX_IMAGES, dedupe, identityOf, validateSelection } from './lib/validation.js';
+import { normalizeImage } from './lib/normalize.js';
 import { sampleResultFor } from './lib/sample-result.js';
 
 const dropzone = document.querySelector('#dropzone');
@@ -18,19 +23,39 @@ const convertButton = document.querySelector('#convert');
 const output = document.querySelector('#output');
 const outputJson = document.querySelector('#output-json');
 
-/** @type {Array<{ file: File, previewUrl: string | null }>} */
+/**
+ * @typedef {object} Entry
+ * @property {number} id            stable across re-renders and async work
+ * @property {string} sourceKey     identity of the file as dropped
+ * @property {string} name          display name (the normalized .jpg name once ready)
+ * @property {boolean} pending      true while normalization is in flight
+ * @property {File | null} file     the normalized JPEG
+ * @property {string | null} previewUrl
+ */
+
+/** @type {Entry[]} */
 let selection = [];
+
+/** Entries are addressed by id, never by index: normalization is async and indices shift. */
+let nextId = 1;
 
 /** Nested drag events fire on children, so track depth instead of toggling. */
 let dragDepth = 0;
+
+/** Rejections from the most recent drop, shown until the next one. */
+let lastRejected = [];
 
 function releasePreview(entry) {
   if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
 }
 
-function addFiles(fileList) {
+function findById(id) {
+  return selection.find((entry) => entry.id === id);
+}
+
+async function addFiles(fileList) {
   const incoming = dedupe(
-    selection.map((entry) => entry.file),
+    selection.map((entry) => entry.sourceKey),
     Array.from(fileList),
   );
 
@@ -38,35 +63,70 @@ function addFiles(fileList) {
     alreadyAccepted: selection.length,
   });
 
-  for (const file of accepted) {
-    selection.push({
-      file,
-      // HEIC has no browser-renderable preview, so don't hold an object URL for it.
-      previewUrl: needsPlaceholder(file) ? null : URL.createObjectURL(file),
-    });
-  }
+  lastRejected = rejected;
 
-  render(rejected);
+  // Show every accepted file immediately as a pending tile, so a slow decode
+  // looks like work in progress rather than a dropped file.
+  const queued = accepted.map((file) => {
+    /** @type {Entry} */
+    const entry = {
+      id: nextId++,
+      sourceKey: identityOf(file),
+      name: file.name,
+      pending: true,
+      file: null,
+      previewUrl: null,
+    };
+    selection.push(entry);
+    return { entry, file };
+  });
+
+  render();
+
+  for (const { entry, file } of queued) {
+    try {
+      const normalized = await normalizeImage(file);
+
+      // The user may have removed this tile or cleared the list mid-decode.
+      if (!findById(entry.id)) continue;
+
+      entry.file = normalized;
+      entry.name = normalized.name;
+      entry.previewUrl = URL.createObjectURL(normalized);
+      entry.pending = false;
+    } catch (error) {
+      console.error(`Could not read ${file.name}`, error);
+      selection = selection.filter((candidate) => candidate.id !== entry.id);
+      lastRejected = [
+        ...lastRejected,
+        { file, reason: 'decode-failed', message: 'Could not be read as an image.' },
+      ];
+    }
+    render();
+  }
 }
 
-function removeAt(index) {
-  const [entry] = selection.splice(index, 1);
-  if (entry) releasePreview(entry);
-  render([]);
+function removeById(id) {
+  const entry = findById(id);
+  if (!entry) return;
+  releasePreview(entry);
+  selection = selection.filter((candidate) => candidate.id !== id);
+  render();
 }
 
 function clearAll() {
   selection.forEach(releasePreview);
   selection = [];
+  lastRejected = [];
   output.hidden = true;
   outputJson.textContent = '';
-  render([]);
+  render();
 }
 
 function renderThumbnails() {
   thumbnails.replaceChildren();
 
-  selection.forEach((entry, index) => {
+  for (const entry of selection) {
     const item = document.createElement('li');
     item.className = 'thumb';
 
@@ -77,42 +137,44 @@ function renderThumbnails() {
       image.alt = '';
       item.append(image);
     } else {
-      const placeholder = document.createElement('div');
-      placeholder.className = 'thumb__placeholder';
-      placeholder.textContent = 'HEIC';
-      item.append(placeholder);
+      const pending = document.createElement('div');
+      pending.className = 'thumb__pending';
+      pending.textContent = 'Reading…';
+      item.append(pending);
     }
 
     const name = document.createElement('span');
     name.className = 'thumb__name';
-    name.textContent = entry.file.name;
-    name.title = entry.file.name;
+    name.textContent = entry.name;
+    name.title = entry.name;
 
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'thumb__remove';
     remove.textContent = '×';
-    remove.setAttribute('aria-label', `Remove ${entry.file.name}`);
-    remove.addEventListener('click', () => removeAt(index));
+    remove.setAttribute('aria-label', `Remove ${entry.name}`);
+    remove.addEventListener('click', () => removeById(entry.id));
 
     item.append(name, remove);
     thumbnails.append(item);
-  });
+  }
 }
 
-function renderErrors(rejected) {
+function renderErrors() {
   errors.replaceChildren();
-  if (rejected.length === 0) return;
+  if (lastRejected.length === 0) return;
 
   const title = document.createElement('p');
   title.className = 'errors__title';
   title.textContent =
-    rejected.length === 1 ? '1 file was not added' : `${rejected.length} files were not added`;
+    lastRejected.length === 1
+      ? '1 file was not added'
+      : `${lastRejected.length} files were not added`;
 
   const list = document.createElement('ul');
   list.className = 'errors__list';
 
-  for (const { file, message } of rejected) {
+  for (const { file, message } of lastRejected) {
     const item = document.createElement('li');
     const name = document.createElement('span');
     name.className = 'errors__file';
@@ -124,18 +186,22 @@ function renderErrors(rejected) {
   errors.append(title, list);
 }
 
-function render(rejected) {
+function render() {
   renderThumbnails();
-  renderErrors(rejected);
+  renderErrors();
+
+  const pending = selection.some((entry) => entry.pending);
 
   counter.textContent = `${selection.length} / ${MAX_IMAGES}`;
   emptyState.hidden = selection.length > 0;
   clearButton.disabled = selection.length === 0;
-  convertButton.disabled = selection.length === 0;
+  // Nothing may be converted while an image is still being read, or the output
+  // would describe images that are not ready.
+  convertButton.disabled = selection.length === 0 || pending;
 }
 
 function convert() {
-  const results = selection.map((entry, index) => sampleResultFor(entry.file.name, index));
+  const results = selection.map((entry, index) => sampleResultFor(entry.name, index));
   outputJson.textContent = JSON.stringify(results, null, 2);
   output.hidden = false;
   output.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -180,4 +246,4 @@ convertButton.addEventListener('click', convert);
 
 window.addEventListener('pagehide', () => selection.forEach(releasePreview));
 
-render([]);
+render();

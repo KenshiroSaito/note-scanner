@@ -153,7 +153,7 @@ body {
 }
 
 .thumb__image,
-.thumb__placeholder {
+.thumb__pending {
   display: block;
   width: 100%;
   aspect-ratio: 4 / 3;
@@ -161,12 +161,34 @@ body {
   background: #eceae6;
 }
 
-.thumb__placeholder {
+.thumb__pending {
   display: grid;
   place-items: center;
+  /* Contains the shimmer below, which would otherwise cover the whole tile. */
+  position: relative;
+  overflow: hidden;
   color: var(--muted);
   font-size: 0.75rem;
-  letter-spacing: 0.08em;
+}
+
+/* A pending tile should read as work in progress, not as a broken image. */
+.thumb__pending::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thumb__pending::after {
+    animation: none;
+  }
 }
 
 .thumb__name {

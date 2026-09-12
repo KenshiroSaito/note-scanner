@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 
 import {
   ACCEPTED_TYPES,
-  MAX_FILE_BYTES,
   MAX_IMAGES,
+  MAX_SOURCE_BYTES,
   checkFile,
   dedupe,
+  identityOf,
   isAcceptedType,
-  needsPlaceholder,
+  isHeic,
   validateSelection,
 } from '../public/lib/validation.js';
 
@@ -24,9 +25,9 @@ test('accepts the documented image types by MIME', () => {
 });
 
 test('falls back to the extension when the browser reports no MIME type', () => {
-  assert.ok(isAcceptedType(file('IMG_0412.heic', '')));
-  assert.ok(isAcceptedType(file('IMG_0412.HEIC', undefined)));
   assert.ok(isAcceptedType(file('scan.JPG', '')));
+  assert.ok(isAcceptedType(file('scan.jpeg', undefined)));
+  assert.ok(isAcceptedType(file('scan.png', '')));
   assert.ok(!isAcceptedType(file('notes.pdf', '')));
 });
 
@@ -38,19 +39,38 @@ test('rejects unsupported formats', () => {
   }
 });
 
+test('recognises HEIC by MIME type and by extension', () => {
+  assert.ok(isHeic(file('a.heic', 'image/heic')));
+  assert.ok(isHeic(file('a.heif', 'image/heif')));
+  assert.ok(isHeic(file('IMG_0412.HEIC', '')));
+  assert.ok(!isHeic(file('a.jpg', 'image/jpeg')));
+});
+
+test('rejects HEIC with a message naming the format, not a generic one', () => {
+  for (const heic of [file('IMG_0412.heic', 'image/heic'), file('IMG_0412.HEIC', '')]) {
+    const result = checkFile(heic);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'heic-unsupported');
+    assert.match(result.message, /HEIC/);
+    assert.match(result.message, /JPEG/);
+  }
+});
+
 test('rejects empty files', () => {
   const result = checkFile(file('blank.jpg', 'image/jpeg', 0));
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'empty');
 });
 
-test('rejects files over the size limit and names the limit', () => {
-  assert.equal(checkFile(file('big.jpg', 'image/jpeg', MAX_FILE_BYTES)).ok, true);
+test('accepts a large photo but rejects one past the source limit', () => {
+  // A 48-megapixel JPEG must still get through; only the undecodable is refused.
+  assert.equal(checkFile(file('big.jpg', 'image/jpeg', 20 * 1024 * 1024)).ok, true);
+  assert.equal(checkFile(file('big.jpg', 'image/jpeg', MAX_SOURCE_BYTES)).ok, true);
 
-  const result = checkFile(file('big.jpg', 'image/jpeg', MAX_FILE_BYTES + 1));
+  const result = checkFile(file('huge.jpg', 'image/jpeg', MAX_SOURCE_BYTES + 1));
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'too-large');
-  assert.match(result.message, /15 MB/);
+  assert.match(result.message, /40 MB/);
 });
 
 test('accepts exactly the image limit and rejects the next one', () => {
@@ -79,45 +99,48 @@ test('partitions a mixed selection without losing files', () => {
     file('good.jpg', 'image/jpeg'),
     file('notes.pdf', 'application/pdf'),
     file('blank.png', 'image/png', 0),
-    file('huge.png', 'image/png', MAX_FILE_BYTES + 1),
+    file('huge.png', 'image/png', MAX_SOURCE_BYTES + 1),
     file('photo.heic', ''),
+    file('shot.png', 'image/png'),
   ];
 
   const { accepted, rejected } = validateSelection(files);
 
-  assert.deepEqual(accepted.map((f) => f.name), ['good.jpg', 'photo.heic']);
+  assert.deepEqual(accepted.map((f) => f.name), ['good.jpg', 'shot.png']);
   assert.deepEqual(rejected.map((r) => [r.file.name, r.reason]), [
     ['notes.pdf', 'unsupported-type'],
     ['blank.png', 'empty'],
     ['huge.png', 'too-large'],
+    ['photo.heic', 'heic-unsupported'],
   ]);
   assert.equal(accepted.length + rejected.length, files.length);
 });
 
-test('flags only HEIC and HEIF as needing a placeholder tile', () => {
-  assert.ok(needsPlaceholder(file('a.heic', 'image/heic')));
-  assert.ok(needsPlaceholder(file('a.heif', '')));
-  assert.ok(needsPlaceholder(file('a.HEIC', '')));
-  assert.ok(!needsPlaceholder(file('a.jpg', 'image/jpeg')));
-  assert.ok(!needsPlaceholder(file('a.png', 'image/png')));
-});
-
-test('dedupe drops repeats of files already selected', () => {
-  const existing = [file('a.jpg', 'image/jpeg', 1024, 10)];
+test('dedupe drops incoming files whose key is already selected', () => {
+  const existingKeys = [identityOf(file('a.jpg', 'image/jpeg', 1024, 10))];
   const incoming = [file('a.jpg', 'image/jpeg', 1024, 10), file('b.jpg', 'image/jpeg', 2048, 20)];
 
-  assert.deepEqual(dedupe(existing, incoming).map((f) => f.name), ['b.jpg']);
+  assert.deepEqual(dedupe(existingKeys, incoming).map((f) => f.name), ['b.jpg']);
 });
 
 test('dedupe keeps a same-named file that differs in size or timestamp', () => {
-  const existing = [file('a.jpg', 'image/jpeg', 1024, 10)];
+  const existingKeys = [identityOf(file('a.jpg', 'image/jpeg', 1024, 10))];
   const incoming = [file('a.jpg', 'image/jpeg', 4096, 10), file('a.jpg', 'image/jpeg', 1024, 99)];
 
-  assert.equal(dedupe(existing, incoming).length, 2);
+  assert.equal(dedupe(existingKeys, incoming).length, 2);
 });
 
 test('dedupe also removes repeats inside a single drop', () => {
   const twice = [file('a.jpg', 'image/jpeg', 1024, 10), file('a.jpg', 'image/jpeg', 1024, 10)];
 
   assert.equal(dedupe([], twice).length, 1);
+});
+
+test('identity is taken from the source file, so normalizing changes the key', () => {
+  // The guard against deduping on post-conversion identities.
+  const source = file('IMG_0412.png', 'image/png', 1_700_000, 42);
+  const normalized = file('IMG_0412.jpg', 'image/jpeg', 240_000, 42);
+
+  assert.notEqual(identityOf(source), identityOf(normalized));
+  assert.deepEqual(dedupe([identityOf(source)], [source]), []);
 });

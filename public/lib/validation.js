@@ -10,19 +10,31 @@
 export const MAX_IMAGES = 25;
 
 /**
- * Per-file size ceiling before upload.
+ * Size ceiling on the *source* file, before normalization.
  *
- * Provisional: the real limit depends on the client-side resizing added in
- * phase 6, after which files are shrunk to ~1568px on the long edge before
- * they are ever sent.
+ * Generous on purpose. The uploaded bytes are the normalized output, which is
+ * bounded by construction (1568px JPEG), so the only job left here is refusing
+ * files too large to decode comfortably. A tight limit would reject legitimate
+ * 48-megapixel photos.
  */
-export const MAX_FILE_BYTES = 15 * 1024 * 1024;
+export const MAX_SOURCE_BYTES = 40 * 1024 * 1024;
 
-/** MIME types we accept. */
-export const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/heic', 'image/heif'];
+/** MIME types we can decode in-browser. */
+export const ACCEPTED_TYPES = ['image/jpeg', 'image/png'];
 
 /** Extensions used when a browser reports no MIME type. */
-const ACCEPTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.heic', '.heif'];
+const ACCEPTED_EXTENSIONS = ['.jpg', '.jpeg', '.png'];
+
+/**
+ * HEIC is recognised only so it can be refused by name.
+ *
+ * Chrome and Firefox have no HEIC decoder, so supporting it needs libheif via
+ * WASM — deferred to its own task (spec section 4, decision 6). Until then the
+ * format iPhones shoot by default deserves a message that says so, rather than
+ * a generic "unsupported format".
+ */
+const HEIC_TYPES = ['image/heic', 'image/heif'];
+const HEIC_EXTENSIONS = ['.heic', '.heif'];
 
 const MEGABYTE = 1024 * 1024;
 
@@ -36,10 +48,10 @@ function formatMegabytes(bytes) {
 }
 
 /**
- * Is this file an image we can handle?
+ * Is this file an image we can decode?
  *
- * Safari and some Android browsers report an empty `type` for HEIC, so the
- * filename extension is the fallback rather than the primary check.
+ * Safari and some Android browsers report an empty `type`, so the filename
+ * extension is the fallback rather than the primary check.
  */
 export function isAcceptedType(file) {
   const type = (file.type ?? '').toLowerCase();
@@ -47,12 +59,11 @@ export function isAcceptedType(file) {
   return ACCEPTED_EXTENSIONS.includes(extensionOf(file.name));
 }
 
-/** True for formats no mainstream browser can render in an `<img>`. */
-export function needsPlaceholder(file) {
+/** True for HEIC/HEIF, by MIME type or extension. */
+export function isHeic(file) {
   const type = (file.type ?? '').toLowerCase();
-  if (type === 'image/heic' || type === 'image/heif') return true;
-  const extension = extensionOf(file.name);
-  return extension === '.heic' || extension === '.heif';
+  if (HEIC_TYPES.includes(type)) return true;
+  return HEIC_EXTENSIONS.includes(extensionOf(file.name));
 }
 
 /**
@@ -61,21 +72,29 @@ export function needsPlaceholder(file) {
  * @returns {{ ok: true } | { ok: false, reason: string, message: string }}
  */
 export function checkFile(file) {
+  // Checked before the generic type test so the message names the format.
+  if (isHeic(file)) {
+    return {
+      ok: false,
+      reason: 'heic-unsupported',
+      message: 'HEIC is not supported yet — export or convert to JPEG first.',
+    };
+  }
   if (!isAcceptedType(file)) {
     return {
       ok: false,
       reason: 'unsupported-type',
-      message: 'Unsupported format. Use JPEG, PNG, or HEIC.',
+      message: 'Unsupported format. Use JPEG or PNG.',
     };
   }
   if (!file.size) {
     return { ok: false, reason: 'empty', message: 'File is empty.' };
   }
-  if (file.size > MAX_FILE_BYTES) {
+  if (file.size > MAX_SOURCE_BYTES) {
     return {
       ok: false,
       reason: 'too-large',
-      message: `Larger than ${formatMegabytes(MAX_FILE_BYTES)} (this file is ${formatMegabytes(file.size)}).`,
+      message: `Larger than ${formatMegabytes(MAX_SOURCE_BYTES)} (this file is ${formatMegabytes(file.size)}).`,
     };
   }
   return { ok: true };
@@ -117,23 +136,33 @@ export function validateSelection(files, { alreadyAccepted = 0 } = {}) {
   return { accepted, rejected };
 }
 
-function identityOf(file) {
+/**
+ * A stable key for one source file.
+ *
+ * Must be taken from the file as dropped: the selection holds normalized JPEGs,
+ * whose size and type differ from the original, so comparing those would let
+ * every repeat drop through.
+ */
+export function identityOf(file) {
   return `${file.name}:${file.size}:${file.lastModified ?? 0}`;
 }
 
 /**
- * Drop incoming files that are already in the list.
+ * Drop incoming files already represented by one of `existingKeys`.
  *
  * Without this, dropping the same files twice — an easy thing to do when a
  * drag is ambiguous — silently duplicates every tile.
+ *
+ * @param {Iterable<string>} existingKeys keys from `identityOf`
+ * @param {Array} incoming
  */
-export function dedupe(existing, incoming) {
-  const seen = new Set(existing.map(identityOf));
+export function dedupe(existingKeys, incoming) {
+  const seen = new Set(existingKeys);
   const unique = [];
   for (const file of incoming) {
-    const id = identityOf(file);
-    if (seen.has(id)) continue;
-    seen.add(id);
+    const key = identityOf(file);
+    if (seen.has(key)) continue;
+    seen.add(key);
     unique.push(file);
   }
   return unique;
