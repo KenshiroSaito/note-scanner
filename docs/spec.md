@@ -1,0 +1,184 @@
+# note-scanner — Specification
+
+A web app that turns photos of whiteboards, slides, and handwritten class notes
+into structured text.
+
+---
+
+## 1. Goal
+
+Eliminate the work of copying handwritten notes into an iPad by hand, and the
+work of manually selecting text out of photos. The user drops in photos and
+gets back clean, structured Markdown.
+
+## 2. User flow
+
+1. User opens the page (no install, no login)
+2. Drag and drop or select images (up to 25)
+3. Choose an output template (e.g. Lecture notes / Practice questions / Freeform)
+4. Press "Convert"
+5. Progress is shown per image (e.g. 7/25 done)
+6. Structured text appears when finished
+7. Copy as Markdown, or download as a `.md` file
+
+## 3. Scope
+
+### In scope
+- Image upload (JPEG/PNG/HEIC, up to 25 per run)
+- Reading both handwriting and printed text
+- Removing noise (circles, arrows, underlines, margin doodles, broken indentation)
+- Reformatting into a defined structure
+- Markdown output (copy / download)
+- Per-image failure reporting and single-image retry
+
+### Out of scope (v1)
+- User accounts, saved history
+- Preserving diagrams as images (formulas are transcribed as LaTeX text)
+- Languages other than English and Japanese
+- PDF input
+- Live camera capture
+
+## 4. Architecture decisions
+
+### Decision 1: Use a vision LLM, not in-browser OCR
+
+**Reason:** The core of this feature is not reading characters — it is deciding
+what is body text and what is a doodle. Traditional OCR (Tesseract.js, EasyOCR)
+returns characters with coordinates but cannot decide "ignore this circled mark"
+or "these three lines are options A/B/C". That requires language understanding,
+so images are sent to a vision-capable LLM.
+
+**Consequence:** This cannot be fully browser-only. An API call is required.
+
+### Decision 2: The API key lives on the server, never in the frontend
+
+**Reason:** An API key written into frontend JS is readable by anyone through
+DevTools, and is leaked the moment it is pushed to GitHub. No exceptions.
+
+**Structure:**
+
+```
+Browser (static page)
+    │  POST images
+    ▼
+Backend (holds the API key)
+    │  calls the vision LLM
+    ▼
+Returns structured JSON
+```
+
+- Frontend: static files only. Can be served from GitHub Pages
+- Backend: one small API proxy. Takes images, calls the LLM, returns JSON
+
+### Decision 3: Two-pass processing
+
+**Pass 1 (per image):** Each image is processed independently into structured
+JSON. Can run in parallel.
+**Pass 2 (whole set):** All pass-1 results are sent to the LLM once and merged.
+
+**Reason:** A single topic in lecture notes often spans several pages. Simply
+concatenating per-image results produces the same heading three times and leaves
+sentences cut in half. Pass 2 merges duplicate headings and reconnects sentences.
+
+### Decision 4: Backend in Node / TypeScript
+
+**Reason:**
+- Type definitions can be shared with the frontend (JSON schema defined once)
+- No heavy image processing is needed — resizing happens in the browser via the
+  Canvas API, so Python's strengths (OpenCV, Pillow) would go unused
+- Zod unifies schema validation and type definitions in one place
+- Runs on the free tiers of Cloudflare Workers / Vercel Functions as-is
+
+**Revisit if:** Preprocessing (deskew, binarization via OpenCV) turns out to be
+necessary to make handwriting readable.
+
+### Decision 5: The extraction engine is swappable
+
+Local (Ollama) and cloud (Claude API) are switchable via one environment variable.
+
+```
+POST /extract  →  extractor  →  ┬→ Ollama (localhost, free)
+                                └→ Claude API (paid, higher accuracy)
+```
+
+**Reason:** Development can iterate for free locally. If handwriting accuracy is
+insufficient, switching to the cloud allows a direct comparison. That measured
+comparison is itself the record of the design decision.
+
+## 5. Output data structure
+
+The LLM must return JSON only — no preamble, no code fences.
+
+```json
+{
+  "source_image": "IMG_0412.jpg",
+  "confidence": "high | medium | low",
+  "blocks": [
+    {
+      "type": "topic | heading | paragraph | list | question | definition | formula | table | unreadable",
+      "text": "body text",
+      "items": ["only for lists or answer options"],
+      "note": "optional explanation of what could not be read"
+    }
+  ]
+}
+```
+
+- `unreadable` exists so the model can state that something was not legible.
+  It must never guess
+- Returned JSON is always schema-validated. On failure, retry once; if it fails
+  again, mark that image as failed
+- Markdown conversion happens in the frontend, not the server (a direct mapping
+  from `blocks` to Markdown)
+
+## 6. Technical challenges
+
+| Challenge | Approach |
+|---|---|
+| 25 images take time | Stream results one at a time; never block on the full set |
+| Cost scales with image count | Resize to ~1568px on the long edge in the browser before upload |
+| One failure stalls everything | Process images independently; retry just the failed one |
+| LLM returns something other than JSON | Schema validation + one retry + fallback |
+| Model invents text it cannot read | Prompt explicitly allows `unreadable` and forbids guessing |
+| Large images break the request | Set a post-resize size limit and reject oversized files client-side |
+
+## 7. Implementation phases
+
+Each phase should fit in a single pull request.
+
+**Phase 1 — Skeleton**
+Static frontend. Drag and drop, preview, image-count validation. No API calls yet
+(display dummy JSON).
+
+**Phase 2 — Backend, single image**
+Build the API proxy. Accept one image, call the vision LLM, return schema-validated
+JSON. API key from an environment variable.
+
+**Phase 3 — Connect frontend**
+Convert one real image and render Markdown. Copy button.
+
+**Phase 4 — Multiple images**
+Up to 25 images, progress display, per-image failure and retry.
+
+**Phase 5 — Pass 2 (merge)**
+Merge duplicate headings, reconnect sentences across pages.
+
+**Phase 6 — Polish**
+Template selection, `.md` download, client-side image resizing.
+
+## 8. Open questions
+
+- **Local model accuracy** — Can an Ollama vision model read handwritten notes
+  well enough? Verify with 3 real class-note photos before deciding
+- **Where the backend runs** — Cloudflare Workers / Vercel Functions / Render.
+  Compare on free tier and cold start
+- **Who pays** — Use my own API key for everyone, or have users supply their own?
+  Required decision before publishing
+- **Template granularity** — Three fixed templates, or let users describe the
+  structure freely?
+- **Formulas** — Transcribe as LaTeX, or mark `unreadable` and reference the image?
+
+## 9. Definition of done (v1)
+
+Feeding in 10 real class-note photos produces Markdown that is faster than
+copying by hand into an iPad, and as readable as if it had been copied by hand.
