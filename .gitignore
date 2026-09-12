@@ -148,3 +148,4 @@ vite.config.ts.timestamp-*
 # Local test data (class note photos and OCR output)
 experiments/images/
 experiments/results/
+test-images/
