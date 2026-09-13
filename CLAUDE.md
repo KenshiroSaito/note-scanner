@@ -19,3 +19,11 @@ See `docs/spec.md` for the full specification.
 - Never write API keys or secrets into source files. Use environment variables.
 - Do not push to `main`. Always work on a branch.
 - Write tests alongside the implementation.
+
+## Phase workflow
+
+When moving to a new phase:
+1. Confirm the previous phase is merged into `main`
+2. Branch off `main`
+3. Plan first; do not write code until the plan is approved
+4. One phase per pull request
