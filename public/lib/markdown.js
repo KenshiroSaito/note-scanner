@@ -9,8 +9,10 @@
  * under `node --test`.
  */
 
+import { latexToUnicode } from './latex-unicode.js';
+
 /** How a formula is written, since LaTeX only renders in some apps. */
-export const FORMULA_FLAVOURS = ['latex', 'plain', 'code'];
+export const FORMULA_FLAVOURS = ['latex', 'unicode', 'plain', 'code'];
 
 export const DEFAULT_FORMULA_FLAVOUR = 'latex';
 
@@ -31,6 +33,10 @@ export function formatFormula(text, flavour = DEFAULT_FORMULA_FLAVOUR) {
   if (!formula) return '';
 
   switch (flavour) {
+    case 'unicode':
+      // Apps that render no markup at all still show Unicode, so this is the
+      // one flavour that looks like the board wherever it is pasted.
+      return latexToUnicode(formula);
     case 'plain':
       // Apple Notes renders neither LaTeX nor code spans; bare text at least
       // reads as the formula it is.

@@ -101,7 +101,7 @@ test('code uses a longer fence when the formula contains a backtick', () => {
 test('defaults to latex', () => {
   assert.equal(DEFAULT_FORMULA_FLAVOUR, 'latex');
   assert.equal(formatFormula('x = 1'), formatFormula('x = 1', 'latex'));
-  assert.deepEqual(FORMULA_FLAVOURS, ['latex', 'plain', 'code']);
+  assert.deepEqual(FORMULA_FLAVOURS, ['latex', 'unicode', 'plain', 'code']);
 });
 
 test('every flavour produces something for a formula block', () => {
