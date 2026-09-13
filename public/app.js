@@ -24,6 +24,8 @@ const convertButton = document.querySelector('#convert');
 const output = document.querySelector('#output');
 const outputMarkdown = document.querySelector('#output-markdown');
 const status = document.querySelector('#status');
+const statusMessage = document.querySelector('#status-message');
+const statusElapsed = document.querySelector('#status-elapsed');
 const flavourSelect = document.querySelector('#flavour');
 const copyButton = document.querySelector('#copy');
 
@@ -59,6 +61,9 @@ let lastResults = [];
 
 /** True while a conversion is in flight, so Convert cannot be double-fired. */
 let converting = false;
+
+/** Ticks the elapsed counter while converting; cleared on every exit path. */
+let elapsedTimer = null;
 
 const FLAVOUR_STORAGE_KEY = 'note-scanner.formula-flavour';
 
@@ -159,6 +164,7 @@ function clearAll() {
   lastResults = [];
   output.hidden = true;
   outputMarkdown.textContent = '';
+  stopElapsed();
   setStatus('');
   render();
 }
@@ -242,8 +248,29 @@ function render() {
 }
 
 function setStatus(message, kind = 'info') {
-  status.textContent = message;
+  // Written to the live region only, so a screen reader hears the message once
+  // rather than hearing the counter tick beside it.
+  statusMessage.textContent = message;
   status.className = message ? `status status--${kind}` : 'status';
+}
+
+function startElapsed() {
+  const startedAt = Date.now();
+  const tick = () => {
+    statusElapsed.textContent = `${Math.round((Date.now() - startedAt) / 1000)}s`;
+  };
+
+  tick();
+  elapsedTimer = setInterval(tick, 1000);
+}
+
+/** Must run on every exit path, or a timer outlives its conversion. */
+function stopElapsed() {
+  if (elapsedTimer !== null) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+  }
+  statusElapsed.textContent = '';
 }
 
 /** Re-render the Markdown from results already in memory. */
@@ -260,13 +287,16 @@ async function convert() {
   converting = true;
   lastResults = [];
   output.hidden = true;
-  // A local model takes tens of seconds; silence would read as a hang.
-  setStatus(`Converting ${entry.name}… this can take up to a minute on a local model.`);
+  // A local model takes tens of seconds, so the status carries a moving dot and
+  // a running count: silence here reads as a hang.
+  setStatus(`Converting ${entry.name}…`, 'busy');
+  startElapsed();
   render();
 
   const outcome = await extractImage(entry.file);
 
   converting = false;
+  stopElapsed();
 
   if (!outcome.ok) {
     setStatus(outcome.message, 'error');

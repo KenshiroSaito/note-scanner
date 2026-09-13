@@ -60,7 +60,12 @@
         </p>
       </section>
 
-      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <div id="status" class="status">
+        <!-- Only the message is announced; the counter ticks every second and
+             would otherwise be read out each time. -->
+        <span id="status-message" role="status" aria-live="polite"></span>
+        <span id="status-elapsed" class="status__elapsed" aria-hidden="true"></span>
+      </div>
 
       <section id="output" class="output" aria-labelledby="output-heading" hidden>
         <div class="output__bar">

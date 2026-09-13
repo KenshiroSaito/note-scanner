@@ -264,8 +264,45 @@ body {
   font-size: 0.82rem;
 }
 
-/* Conversion status */
-.status:not(:empty) {
+/* Conversion status. The container is always present but takes no space until
+   a state class is applied, so an idle page shows no empty box. */
+.status {
+  margin: 0;
+}
+
+.status__elapsed {
+  margin-left: 0.4rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A moving dot, so a long conversion reads as working rather than frozen. */
+.status--busy::before {
+  content: '';
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.5rem;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status--busy::before {
+    animation: none;
+  }
+}
+
+.status--busy,
+.status--info,
+.status--error,
+.status--done {
   margin-top: 1.25rem;
   padding: 0.7rem 1rem;
   border: 1px solid var(--border);
@@ -274,13 +311,13 @@ body {
   font-size: 0.88rem;
 }
 
-.status--error:not(:empty) {
+.status--error {
   border-color: #eacfc0;
   background: var(--danger-bg);
   color: var(--danger);
 }
 
-.status--done:not(:empty) {
+.status--done {
   border-color: #c6ddcd;
   background: #f0f7f3;
 }
