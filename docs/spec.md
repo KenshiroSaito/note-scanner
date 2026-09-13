@@ -24,7 +24,7 @@ gets back clean, structured Markdown.
 ## 3. Scope
 
 ### In scope
-- Image upload (JPEG/PNG/HEIC, up to 25 per run)
+- Image upload (JPEG/PNG, up to 25 per run). HEIC is deferred — see decision 6
 - Reading both handwriting and printed text
 - Removing noise (circles, arrows, underlines, margin doodles, broken indentation)
 - Reformatting into a defined structure
@@ -105,6 +105,26 @@ POST /extract  →  extractor  →  ┬→ Ollama (localhost, free)
 insufficient, switching to the cloud allows a direct comparison. That measured
 comparison is itself the record of the design decision.
 
+### Decision 6: HEIC support is deferred, and needs a vendored WASM decoder
+
+**Constraint:** Chrome and Firefox have no native HEIC decoder. `<img>` will not
+render it and `createImageBitmap` rejects it. Only Safari can decode HEIC.
+
+**Consequence:** supporting the format iPhones shoot by default requires libheif
+compiled to WebAssembly (roughly 1-3 MB). Because the frontend has no build step,
+that file has to be vendored into `public/vendor/` and committed rather than
+installed from npm.
+
+**Decision:** deferred to its own task after phase 1. Until then `.heic` is
+rejected client-side with a message naming the format and pointing at JPEG — a
+generic "unsupported format" on the default iPhone format would be the most
+confusing failure the app could produce.
+
+**Revisit when:** phase 1 is merged, and it is known which browser is actually
+used for capture. iOS Safari usually transcodes HEIC to JPEG when a photo is
+chosen through a file input, so the decoder may only matter for files dragged out
+of macOS Finder.
+
 ## 5. Output data structure
 
 The LLM must return JSON only — no preamble, no code fences.
@@ -148,7 +168,9 @@ Each phase should fit in a single pull request.
 
 **Phase 1 — Skeleton**
 Static frontend. Drag and drop, preview, image-count validation. No API calls yet
-(display dummy JSON).
+(display dummy JSON). Also normalizes every dropped file in place — EXIF
+orientation, resize to 1568px on the long edge, re-encode as JPEG — so the rest
+of the app only handles one bounded format (moved up from phase 6).
 
 **Phase 2 — Backend, single image**
 Build the API proxy. Accept one image, call the vision LLM, return schema-validated
@@ -164,7 +186,7 @@ Up to 25 images, progress display, per-image failure and retry.
 Merge duplicate headings, reconnect sentences across pages.
 
 **Phase 6 — Polish**
-Template selection, `.md` download, client-side image resizing.
+Template selection, `.md` download. (Client-side resizing moved to phase 1.)
 
 ## 8. Open questions
 
