@@ -73,12 +73,36 @@ Returns structured JSON
 ### Decision 3: Two-pass processing
 
 **Pass 1 (per image):** Each image is processed independently into structured
-JSON. Can run in parallel.
-**Pass 2 (whole set):** All pass-1 results are sent to the LLM once and merged.
+JSON by the vision LLM. Can run in parallel.
+**Pass 2 (whole set):** All pass-1 results are merged into one document —
+deterministically, in code, with no LLM call.
 
-**Reason:** A single topic in lecture notes often spans several pages. Simply
-concatenating per-image results produces the same heading three times and leaves
-sentences cut in half. Pass 2 merges duplicate headings and reconnects sentences.
+**Reason:** A single topic in lecture notes often spans several pages, and the
+same board is often photographed more than once. Simply concatenating per-image
+results repeats whole sections and leaves sentences cut in half. Pass 2 removes
+repeated content and reconnects sentences.
+
+**Revised in phase 5 — pass 2 does not use the LLM.** The first implementation
+asked the model to propose merge operations (drop a duplicate block, join a cut
+sentence), with code verifying each one before applying it. On four real lecture
+photos, qwen2.5vl:7b proposed 10 operations and all 10 failed verification: one
+would have deleted a formula, and nine were impossible joins. The real duplicate —
+the same MST definition on two photos — could not have been expressed anyway,
+because pass 1 split one copy into five blocks and the other into two.
+
+That duplicate is findable from the words alone, so code finds it. Each later
+block is compared against runs of up to four consecutive blocks on earlier pages,
+after normalising notation so `\sum` and `∑` count as the same word. A block is
+dropped only when the kept run already contains its words (at least 80% overlap,
+at most one word missing), and a block under six words is dropped only as part of
+a repeated run, so short generic lines such as "Definition" survive. A prose block
+ending without punctuation is joined to a next-page prose block that starts in
+lower case. No text the model read can be lost: a drop requires its words to be
+kept elsewhere, and a join concatenates.
+
+**Revisit if:** real use shows repeated content the word check misses, or a
+stronger model (the Claude engine) makes model-proposed merges worth measuring
+again.
 
 ### Decision 4: Backend in Node / TypeScript
 
@@ -183,7 +207,9 @@ Convert one real image and render Markdown. Copy button.
 Up to 25 images, progress display, per-image failure and retry.
 
 **Phase 5 — Pass 2 (merge)**
-Merge duplicate headings, reconnect sentences across pages.
+Remove content repeated across pages (a board photographed twice), reconnect
+sentences cut across pages, and keep the page-by-page document available beside
+the merged one. Deterministic, in code, with no model call — see decision 3.
 
 **Phase 6 — Polish**
 Template selection, `.md` download. (Client-side resizing moved to phase 1.)
