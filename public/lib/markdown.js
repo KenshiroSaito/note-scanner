@@ -251,6 +251,15 @@ export function blockToMarkdown(block, flavour = DEFAULT_FORMULA_FLAVOUR) {
  * @param {string} [flavour]
  */
 export function resultToMarkdown(result, flavour = DEFAULT_FORMULA_FLAVOUR) {
+  // A page that could not be read is marked where it belongs, rather than left
+  // out. A document that looks complete while a page is missing from the middle
+  // is the failure this avoids — the reader has no way to know to go back to the
+  // photo for something they were never shown was absent.
+  if (result?.error) {
+    const name = String(result.source_image ?? 'this image').trim() || 'this image';
+    return `> **[failed]** ${name} — ${String(result.error).trim()}`;
+  }
+
   return (result?.blocks ?? [])
     .map((block) => blockToMarkdown(block, flavour))
     .map((markdown) => markdown.trim())

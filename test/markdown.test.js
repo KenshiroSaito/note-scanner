@@ -335,3 +335,42 @@ test('loses no string from any block type, in any flavour', () => {
     }
   }
 });
+
+/* --- failed images --- */
+
+test('marks a failed image where it belongs in the document', () => {
+  const markdown = resultToMarkdown({
+    source_image: 'IMG_0413.jpg',
+    error: 'Ollama returned 404',
+  });
+
+  assert.match(markdown, /^> /, 'should stand out as a blockquote');
+  assert.match(markdown, /failed/);
+  assert.match(markdown, /IMG_0413\.jpg/);
+  assert.match(markdown, /Ollama returned 404/);
+});
+
+test('keeps page order with a failure in the middle', () => {
+  const document = resultsToMarkdown([
+    { blocks: [{ type: 'heading', text: 'Page one' }] },
+    { source_image: 'page-two.jpg', error: 'the model could not read this page' },
+    { blocks: [{ type: 'heading', text: 'Page three' }] },
+  ]);
+
+  const sections = document.split('\n\n---\n\n');
+  assert.equal(sections.length, 3);
+  assert.match(sections[0], /Page one/);
+  assert.match(sections[1], /\[failed\].*page-two\.jpg/);
+  assert.match(sections[2], /Page three/);
+});
+
+test('shows the failure marker in every flavour', () => {
+  for (const flavour of FORMULA_FLAVOURS) {
+    const markdown = resultToMarkdown({ source_image: 'x.jpg', error: 'boom' }, flavour);
+    assert.match(markdown, /\[failed\]/, `${flavour} should mark the failure`);
+  }
+});
+
+test('falls back to a readable name when the failure has none', () => {
+  assert.match(resultToMarkdown({ error: 'boom' }), /this image/);
+});
