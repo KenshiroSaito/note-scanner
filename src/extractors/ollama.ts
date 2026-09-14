@@ -5,7 +5,8 @@
  * dependency for nothing.
  */
 import type { Config } from '../config.ts';
-import { EXTRACTION_PROMPT } from '../prompt.ts';
+import { mergeOperationsJsonSchema } from '../merge.ts';
+import { EXTRACTION_PROMPT, MERGE_PROMPT } from '../prompt.ts';
 import { extractionJsonSchema } from '../schema.ts';
 import {
   ExtractorError,
@@ -14,6 +15,7 @@ import {
   type Extractor,
   type Generate,
   type GenerateRequest,
+  type Merger,
 } from './types.ts';
 
 /**
@@ -89,5 +91,17 @@ export function createOllamaExtractor(config: Config): Extractor {
       prompt: `${EXTRACTION_PROMPT}\n\nFilename: ${image.name}`,
       images: [image],
       jsonSchema: extractionJsonSchema(),
+    });
+}
+
+export function createOllamaMerger(config: Config): Merger {
+  const generate = createOllamaGenerate(config);
+
+  // Text only, on the same model as extraction: that model is already loaded,
+  // and loading a separate text model would compete for the same memory.
+  return (listing) =>
+    generate({
+      prompt: `${MERGE_PROMPT}\n\n${listing}`,
+      jsonSchema: mergeOperationsJsonSchema(),
     });
 }

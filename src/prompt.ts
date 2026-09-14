@@ -74,3 +74,41 @@ the mathematics is its own "formula" block.
   fine; invented text is a failure.
 - Set "confidence" to how well you could read the page overall: "high" when the
   text was clear, "low" when much of it was a guess you declined to make.`;
+
+/**
+ * The merge prompt (spec section 4, decision 3 — pass 2).
+ *
+ * The model is never asked to rewrite the notes, only to point at blocks by ID.
+ * A rewrite could drop text with no way to detect it; an operation over an ID is
+ * something code can check before applying it (src/merge.ts).
+ */
+export const MERGE_PROMPT = `You are merging the transcribed pages of one set of class notes. The pages were photographed separately, so the same content can appear on more than one page, and a sentence can be cut off at the end of one page and continue on the next.
+
+Each block is listed on one line with an ID in square brackets, like [p2.b3] for page 2, block 3. Pages are listed in order. When you name a block, write its ID without the brackets: "p2.b3".
+
+Return JSON only. No preamble, no explanation, no markdown code fences.
+
+Shape:
+{ "operations": [ ... ] }
+
+You may use only these two operations:
+
+- { "op": "drop_duplicate", "id": "p3.b1", "duplicate_of": "p1.b2" }
+  The block "id" repeats content that "duplicate_of" already contains, for
+  example the same definition photographed twice and read with small
+  differences. "duplicate_of" must be on an earlier page. Something repeated on
+  the same page is not a duplicate: keep both.
+
+- { "op": "join", "first": "p1.b7", "second": "p2.b1" }
+  "first" is the last block of a page, "second" is the first block of the next
+  page, and a sentence was cut between them. Only join prose.
+
+Rules:
+- Never rewrite, summarise, shorten, or correct any text. You cannot change what
+  a block says; you can only point at blocks by their IDs.
+- Never reorder blocks.
+- Only drop a block when the earlier block says the same thing. If the later
+  block adds anything, keep it.
+- Pages about different subjects are not duplicates of each other, even when
+  they share a word.
+- If nothing should be merged, return { "operations": [] }.`;

@@ -7,7 +7,7 @@
  * this is the only file that changes.
  */
 import type { Config } from '../config.ts';
-import { EXTRACTION_PROMPT } from '../prompt.ts';
+import { EXTRACTION_PROMPT, MERGE_PROMPT } from '../prompt.ts';
 import {
   ExtractorError,
   parseJsonLoosely,
@@ -15,6 +15,7 @@ import {
   type Extractor,
   type Generate,
   type GenerateRequest,
+  type Merger,
 } from './types.ts';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
@@ -125,4 +126,10 @@ export function createClaudeExtractor(config: Config): Extractor {
       prompt: `${EXTRACTION_PROMPT}\n\nFilename: ${image.name}`,
       images: [image],
     });
+}
+
+export function createClaudeMerger(config: Config): Merger {
+  const generate = createClaudeGenerate(config);
+
+  return (listing) => generate({ prompt: `${MERGE_PROMPT}\n\n${listing}` });
 }
