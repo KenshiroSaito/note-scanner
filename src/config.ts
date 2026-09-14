@@ -32,6 +32,16 @@ const configSchema = z
 
     MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(8 * MEGABYTE),
 
+    /**
+     * How many images the browser converts at once.
+     *
+     * Sequential would take about twenty minutes for a full 25-image run.
+     * Configurable because how many parallel requests this machine sustains
+     * before it degrades is a thing to measure, not to guess. Capped so a typo
+     * cannot launch 500 requests at a local model.
+     */
+    MAX_CONCURRENCY: z.coerce.number().int().positive().max(16).default(3),
+
     /** Explicit allowlist; never "*", since this endpoint spends real money. */
     ALLOWED_ORIGINS: z.string().default('http://localhost:8000'),
   })

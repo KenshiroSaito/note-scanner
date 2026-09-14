@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { API_BASE, extractImage } from '../public/lib/api.js';
+import { API_BASE, DEFAULT_MAX_CONCURRENCY, extractImage, fetchRuntimeConfig } from '../public/lib/api.js';
 
 /*
  * `fetch`, `FormData`, and `File` are all globals in Node, so the client gets
@@ -131,11 +131,13 @@ test('reports a timeout distinctly from an unreachable backend', async (t) => {
   const outcome = await extractImage(jpeg());
 
   assert.equal(outcome.ok, false);
-  assert.match(outcome.message, /took too long/);
+  assert.match(outcome.message, /too long/);
   assert.ok(!outcome.message.includes('npm start'));
 });
 
-test('reports an aborted request without blaming the backend', async (t) => {
+test('flags an aborted request as cancelled rather than failed', async (t) => {
+  // Stop must not leave an image looking like it failed: a cancelled image
+  // returns to its ready state and earns no retry button.
   const stub = stubFetch(() => {
     const error = new Error('aborted');
     error.name = 'AbortError';
@@ -146,7 +148,23 @@ test('reports an aborted request without blaming the backend', async (t) => {
   const outcome = await extractImage(jpeg());
 
   assert.equal(outcome.ok, false);
-  assert.match(outcome.message, /cancelled/);
+  assert.equal(outcome.cancelled, true);
+});
+
+test('does not flag a timeout as cancelled', async (t) => {
+  // A timeout is a real failure and should be retryable.
+  const stub = stubFetch(() => {
+    const error = new Error('timed out');
+    error.name = 'TimeoutError';
+    throw error;
+  });
+  t.after(stub.restore);
+
+  const outcome = await extractImage(jpeg());
+
+  assert.equal(outcome.ok, false);
+  assert.ok(!outcome.cancelled);
+  assert.match(outcome.message, /too long/);
 });
 
 test('reports a success response whose body is not JSON', async (t) => {
@@ -167,4 +185,35 @@ test('passes a caller-supplied abort signal through', async (t) => {
   await extractImage(jpeg(), { signal: controller.signal });
 
   assert.equal(stub.calls[0].init.signal, controller.signal);
+});
+
+
+test('reads the concurrency limit from the backend', async (t) => {
+  const stub = stubFetch(() => jsonResponse({ ok: true, extractor: 'ollama', maxConcurrency: 2 }));
+  t.after(stub.restore);
+
+  const config = await fetchRuntimeConfig();
+
+  assert.equal(config.maxConcurrency, 2);
+  assert.match(stub.calls[0].url, /\/health$/);
+});
+
+test('falls back to a safe concurrency when /health cannot be read', async (t) => {
+  const stub = stubFetch(() => {
+    throw new TypeError('fetch failed');
+  });
+  t.after(stub.restore);
+
+  const config = await fetchRuntimeConfig({ refresh: true });
+
+  assert.equal(config.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
+});
+
+test('ignores a nonsense concurrency value from the backend', async (t) => {
+  const stub = stubFetch(() => jsonResponse({ ok: true, maxConcurrency: 'lots' }));
+  t.after(stub.restore);
+
+  const config = await fetchRuntimeConfig({ refresh: true });
+
+  assert.equal(config.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
 });

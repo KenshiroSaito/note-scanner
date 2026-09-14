@@ -33,6 +33,41 @@ export const CLIENT_TIMEOUT_MS = 200_000;
  * @param {{ signal?: AbortSignal }} [options]
  * @returns {Promise<{ ok: true, result: object } | { ok: false, message: string }>}
  */
+/** Falls back to this if /health cannot be reached. */
+export const DEFAULT_MAX_CONCURRENCY = 3;
+
+let cachedConfig = null;
+
+/**
+ * Read runtime settings from the backend.
+ *
+ * The page has no build step and no environment, so settings that need to be
+ * tunable — the concurrency limit, which the user wants to measure — live in the
+ * server's config and are fetched from here. Cached for the session.
+ *
+ * @param {{ refresh?: boolean }} [options] re-read instead of using the cache
+ * @returns {Promise<{ maxConcurrency: number }>}
+ */
+export async function fetchRuntimeConfig({ refresh = false } = {}) {
+  if (cachedConfig && !refresh) return cachedConfig;
+
+  try {
+    const response = await fetch(`${API_BASE}/health`);
+    if (response.ok) {
+      const body = await response.json();
+      const limit = Number(body?.maxConcurrency);
+      cachedConfig = {
+        maxConcurrency: Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_MAX_CONCURRENCY,
+      };
+      return cachedConfig;
+    }
+  } catch {
+    // A page that cannot reach /health is about to report that anyway.
+  }
+
+  return { maxConcurrency: DEFAULT_MAX_CONCURRENCY };
+}
+
 export async function extractImage(file, { signal } = {}) {
   const body = new FormData();
   // Field name must match what the backend reads (src/extract.ts).
@@ -46,8 +81,14 @@ export async function extractImage(file, { signal } = {}) {
       signal: signal ?? AbortSignal.timeout(CLIENT_TIMEOUT_MS),
     });
   } catch (error) {
-    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
-      return { ok: false, message: 'The request was cancelled or took too long.' };
+    // Cancelled and timed out must not be conflated: an image the user stopped
+    // returns to its ready state, while a timeout is a real failure that earns a
+    // retry button.
+    if (signal?.aborted || error?.name === 'AbortError') {
+      return { ok: false, cancelled: true, message: 'Cancelled.' };
+    }
+    if (error?.name === 'TimeoutError') {
+      return { ok: false, message: 'The model took too long to respond.' };
     }
     // By far the most likely failure: the dev setup is two processes and the
     // backend is the one people forget.

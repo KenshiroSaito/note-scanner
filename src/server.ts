@@ -17,7 +17,15 @@ const app = new Hono();
 // and the frontend lives on a different origin by design (decision 2).
 app.use('/*', cors({ origin: config.allowedOrigins, allowMethods: ['POST', 'OPTIONS'] }));
 
-app.get('/health', (context) => context.json({ ok: true, extractor: config.EXTRACTOR }));
+// Also the frontend's source of runtime settings: the page has no build step
+// and no environment of its own, so configuration stays here and is fetched.
+app.get('/health', (context) =>
+  context.json({
+    ok: true,
+    extractor: config.EXTRACTOR,
+    maxConcurrency: config.MAX_CONCURRENCY,
+  }),
+);
 app.route('/', createExtractRoutes({ config, extract: createExtractor(config) }));
 
 serve({ fetch: app.fetch, port: config.PORT }, (info) => {
