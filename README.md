@@ -6,15 +6,15 @@ See [`docs/spec.md`](docs/spec.md) for the full specification.
 
 ## Status
 
-Phase 3 (frontend connected). Drop a photo, press **Convert**, and get Markdown
-you can copy.
+Phase 4 (multiple images). Drop up to 25 photos, press **Convert**, and get one
+Markdown document you can copy.
 
 **Frontend** — images are normalized in place on drop: EXIF orientation applied,
 resized to 1568px on the long edge, re-encoded as JPEG. JPEG and PNG input only;
-HEIC is rejected for now, see decision 6 in the spec. Convert sends the **first**
-selected image and renders the result as Markdown; formulas can be written as
-LaTeX, plain text, or code spans. Converting every selected image, with progress
-and per-image retry, is phase 4.
+HEIC is rejected for now, see decision 6 in the spec. Convert runs every selected
+image with a few in flight at once, streaming each result into the document as it
+lands; progress, Stop, and per-image Retry are all live during a run. Formulas can
+be written as LaTeX, Unicode, plain text, or code spans.
 
 **Backend** — `POST /extract` takes one image, calls a vision model, and returns
 schema-validated JSON (the shape in spec section 5). Ollama runs it locally by
@@ -65,6 +65,9 @@ curl -sS -F image=@your-photo.jpg http://localhost:8787/extract
 ```
 
 Expect this to take 30–120 seconds on a local 7B vision model — hence the
-generous `REQUEST_TIMEOUT_MS` default. Responses are `200` with the validated
+generous `REQUEST_TIMEOUT_MS` default. The browser converts `MAX_CONCURRENCY`
+images at once (default 3), which measured 2.7x faster than sequential on six
+images; change it with `MAX_CONCURRENCY=2 npm start` and watch the per-image
+timings in the browser console. Responses are `200` with the validated
 result, `400` for a bad request, `502` when the model is unreachable or returned
 unusable output twice, and `504` on timeout.

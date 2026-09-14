@@ -10,7 +10,8 @@
  */
 import { MAX_IMAGES, dedupe, identityOf, validateSelection } from './lib/validation.js';
 import { normalizeImage } from './lib/normalize.js';
-import { extractImage } from './lib/api.js';
+import { extractImage, fetchRuntimeConfig } from './lib/api.js';
+import { runWithConcurrency } from './lib/queue.js';
 import { DEFAULT_FORMULA_FLAVOUR, FORMULA_FLAVOURS, resultsToMarkdown } from './lib/markdown.js';
 
 const dropzone = document.querySelector('#dropzone');
@@ -28,6 +29,9 @@ const statusMessage = document.querySelector('#status-message');
 const statusElapsed = document.querySelector('#status-elapsed');
 const flavourSelect = document.querySelector('#flavour');
 const copyButton = document.querySelector('#copy');
+const stopButton = document.querySelector('#stop');
+const retryButton = document.querySelector('#retry');
+const progress = document.querySelector('#progress');
 
 /**
  * @typedef {object} Entry
@@ -37,6 +41,9 @@ const copyButton = document.querySelector('#copy');
  * @property {boolean} pending      true while normalization is in flight
  * @property {File | null} file     the normalized JPEG
  * @property {string | null} previewUrl
+ * @property {'ready'|'converting'|'done'|'failed'} status conversion state
+ * @property {object | null} result the extraction result once converted
+ * @property {string | null} error  why this image failed, if it did
  */
 
 /** @type {Entry[]} */
@@ -64,6 +71,9 @@ let converting = false;
 
 /** Ticks the elapsed counter while converting; cleared on every exit path. */
 let elapsedTimer = null;
+
+/** Aborts the whole run: both the queue and the requests already in flight. */
+let runAbort = null;
 
 const FLAVOUR_STORAGE_KEY = 'note-scanner.formula-flavour';
 
@@ -119,6 +129,9 @@ async function addFiles(fileList) {
       pending: true,
       file: null,
       previewUrl: null,
+      status: 'ready',
+      result: null,
+      error: null,
     };
     selection.push(entry);
     return { entry, file };
@@ -158,6 +171,7 @@ function removeById(id) {
 }
 
 function clearAll() {
+  runAbort?.abort();
   selection.forEach(releasePreview);
   selection = [];
   lastRejected = [];
@@ -189,6 +203,15 @@ function renderThumbnails() {
       item.append(pending);
     }
 
+    if (entry.status !== 'ready') {
+      const badge = document.createElement('span');
+      badge.className = `thumb__state thumb__state--${entry.status}`;
+      badge.textContent =
+        entry.status === 'converting' ? 'Reading…' : entry.status === 'done' ? 'Done' : 'Failed';
+      if (entry.status === 'failed' && entry.error) badge.title = entry.error;
+      item.append(badge);
+    }
+
     const name = document.createElement('span');
     name.className = 'thumb__name';
     name.textContent = entry.name;
@@ -202,6 +225,17 @@ function renderThumbnails() {
     remove.addEventListener('click', () => removeById(entry.id));
 
     item.append(name, remove);
+
+    if (entry.status === 'failed' && !converting) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'thumb__retry';
+      retry.textContent = 'Retry';
+      retry.setAttribute('aria-label', `Retry ${entry.name}`);
+      retry.addEventListener('click', () => runConversion([entry]));
+      item.append(retry);
+    }
+
     thumbnails.append(item);
   }
 }
@@ -237,6 +271,8 @@ function render() {
   renderErrors();
 
   const pending = selection.some((entry) => entry.pending);
+  const failed = selection.filter((entry) => entry.status === 'failed').length;
+  const converted = convertedCount();
 
   counter.textContent = `${selection.length} / ${MAX_IMAGES}`;
   emptyState.hidden = selection.length > 0;
@@ -245,6 +281,12 @@ function render() {
   // would describe images that are not ready.
   convertButton.disabled = selection.length === 0 || pending || converting;
   convertButton.textContent = converting ? 'Converting…' : 'Convert';
+
+  stopButton.hidden = !converting;
+  retryButton.hidden = converting || failed === 0;
+  retryButton.textContent = failed === 1 ? 'Retry 1 failed image' : `Retry ${failed} failed images`;
+
+  progress.textContent = converting || converted > 0 ? `${converted} / ${selection.length} converted` : '';
 }
 
 function setStatus(message, kind = 'info') {
@@ -273,49 +315,125 @@ function stopElapsed() {
   statusElapsed.textContent = '';
 }
 
-/** Re-render the Markdown from results already in memory. */
+/**
+ * Re-render the Markdown from results already in memory.
+ *
+ * Built from `selection` order, never completion order: with several images in
+ * flight at once completions interleave arbitrarily, and page order is the one
+ * thing the reader depends on.
+ */
 function renderMarkdown() {
-  const markdown = resultsToMarkdown(lastResults, formulaFlavour);
+  const results = selection
+    .map((entry) =>
+      entry.result ??
+      (entry.status === 'failed' ? { source_image: entry.name, error: entry.error } : null),
+    )
+    .filter(Boolean);
+
+  const markdown = resultsToMarkdown(results, formulaFlavour);
   outputMarkdown.textContent = markdown;
   output.hidden = markdown.length === 0;
 }
 
-async function convert() {
-  const [entry] = selection;
-  if (!entry?.file || converting) return;
+function convertedCount() {
+  return selection.filter((entry) => entry.status === 'done' || entry.status === 'failed').length;
+}
 
-  converting = true;
-  lastResults = [];
-  output.hidden = true;
-  // A local model takes tens of seconds, so the status carries a moving dot and
-  // a running count: silence here reads as a hang.
-  setStatus(`Converting ${entry.name}…`, 'busy');
-  startElapsed();
+/** Convert one image and fold the outcome back into its entry. */
+async function convertEntry(entry, signal) {
+  if (!entry.file) return;
+
+  entry.status = 'converting';
+  entry.error = null;
   render();
 
-  const outcome = await extractImage(entry.file);
+  const startedAt = Date.now();
+  const outcome = await extractImage(entry.file, { signal });
+  const seconds = Math.round((Date.now() - startedAt) / 1000);
 
-  converting = false;
-  stopElapsed();
-
-  if (!outcome.ok) {
-    setStatus(outcome.message, 'error');
+  if (outcome.cancelled) {
+    // Stopped by the user, so it never failed: back to ready, no retry offered.
+    entry.status = 'ready';
     render();
     return;
   }
 
-  lastResults = [outcome.result];
-  const skipped = selection.length - 1;
-  setStatus(
-    skipped > 0
-      ? `Converted ${entry.name}. ${skipped} other image${skipped === 1 ? '' : 's'} were not converted — that arrives in phase 4.`
-      : `Converted ${entry.name}.`,
-    'done',
+  if (outcome.ok) {
+    entry.status = 'done';
+    entry.result = outcome.result;
+  } else {
+    entry.status = 'failed';
+    entry.error = outcome.message;
+  }
+
+  // Printed so the concurrency measurement is a matter of reading numbers.
+  console.log(`${entry.name}: ${entry.status} in ${seconds}s`);
+
+  // Streamed, not batched: the document grows as the run proceeds.
+  renderMarkdown();
+  render();
+}
+
+/**
+ * Convert a set of images with a bounded number in flight.
+ *
+ * @param {Entry[]} queue
+ */
+async function runConversion(queue) {
+  if (queue.length === 0 || converting) return;
+
+  const { maxConcurrency } = await fetchRuntimeConfig();
+
+  converting = true;
+  runAbort = new AbortController();
+  setStatus(`Converting ${queue.length} image${queue.length === 1 ? '' : 's'}…`, 'busy');
+  startElapsed();
+  render();
+
+  await runWithConcurrency(
+    queue,
+    maxConcurrency,
+    (entry) => convertEntry(entry, runAbort.signal),
+    { signal: runAbort.signal },
   );
+
+  const stopped = runAbort.signal.aborted;
+  converting = false;
+  runAbort = null;
+  stopElapsed();
+
+  const failed = selection.filter((entry) => entry.status === 'failed').length;
+  const done = selection.filter((entry) => entry.status === 'done').length;
+
+  if (stopped) {
+    setStatus(`Stopped. ${done} image${done === 1 ? '' : 's'} converted.`, 'info');
+  } else if (failed > 0) {
+    setStatus(
+      `${done} converted, ${failed} failed. Retry the failed images, or copy what worked.`,
+      'error',
+    );
+  } else {
+    setStatus(`Converted ${done} image${done === 1 ? '' : 's'}.`, 'done');
+  }
 
   renderMarkdown();
   render();
-  output.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (!output.hidden) output.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/** Convert everything not already converted, leaving finished work alone. */
+function convert() {
+  return runConversion(selection.filter((entry) => entry.file && entry.status !== 'done'));
+}
+
+function retryFailed() {
+  return runConversion(selection.filter((entry) => entry.status === 'failed'));
+}
+
+function stopRun() {
+  // Aborts the in-flight requests as well as the queue: stopping only the
+  // scheduling would leave the browser waiting on requests nobody wants.
+  runAbort?.abort();
 }
 
 async function copyMarkdown() {
@@ -370,6 +488,8 @@ fileInput.addEventListener('change', () => {
 
 clearButton.addEventListener('click', clearAll);
 convertButton.addEventListener('click', convert);
+stopButton.addEventListener('click', stopRun);
+retryButton.addEventListener('click', retryFailed);
 copyButton.addEventListener('click', copyMarkdown);
 
 flavourSelect.value = formulaFlavour;

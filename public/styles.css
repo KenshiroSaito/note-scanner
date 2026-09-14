@@ -191,6 +191,46 @@ body {
   }
 }
 
+.progress {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Per-tile conversion state */
+.thumb__state {
+  position: absolute;
+  top: 0.3rem;
+  left: 0.3rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(34, 32, 29, 0.72);
+  color: #fff;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+}
+
+.thumb__state--done {
+  background: var(--accent);
+}
+
+.thumb__state--failed {
+  background: var(--danger);
+}
+
+.thumb__retry {
+  display: block;
+  width: 100%;
+  padding: 0.35rem;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
 .thumb__name {
   display: block;
   padding: 0.4rem 0.5rem;
