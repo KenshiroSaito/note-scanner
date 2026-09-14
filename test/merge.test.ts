@@ -324,3 +324,56 @@ test('exposes a JSON Schema for constrained decoding', () => {
   assert.equal(schema.type, 'object');
   assert.ok((schema.properties as Record<string, unknown>).operations);
 });
+
+/* --- found by running pass 2 on the real photos --- */
+
+test('accepts block IDs copied with the listing brackets', () => {
+  // qwen2.5vl wrote "[p1.b5]" for every ID, and every operation was refused.
+  const pages = [
+    page('a.jpg', [{ type: 'paragraph', text: sameSentence }]),
+    page('b.jpg', [{ type: 'paragraph', text: sameSentence }]),
+  ];
+
+  const outcome = applyMergeOperations(pages, [{ op: 'drop_duplicate', id: '[p2.b1]', duplicate_of: ' [p1.b1] ' }]);
+
+  assert.equal(outcome.drops.length, 1, JSON.stringify(outcome.rejected));
+  assert.deepEqual(outcome.drops[0], { id: 'p2.b1', duplicate_of: 'p1.b1' });
+  assertNothingLost(pages, outcome);
+});
+
+test('accepts bracketed IDs in a join too', () => {
+  const pages = [
+    page('a.jpg', [{ type: 'paragraph', text: 'among all edges where u is in S' }]),
+    page('b.jpg', [{ type: 'paragraph', text: 'find the edge of min weight' }]),
+  ];
+
+  const outcome = applyMergeOperations(pages, [{ op: 'join', first: '[p1.b1]', second: '[p2.b1]' }]);
+
+  assert.deepEqual(outcome.joins, [{ first: 'p1.b1', second: 'p2.b1' }]);
+});
+
+test('refuses to drop a block as a duplicate of another on the same page', () => {
+  // The model proposed exactly this on note2. Its second formula has the same
+  // symbols as its first, so word overlap alone would accept it — but it is a
+  // different statement, and dropping it would leave "that minimizes" hanging.
+  const outcome = applyMergeOperations([note2], [{ op: 'drop_duplicate', id: '[p1.b5]', duplicate_of: '[p1.b2]' }]);
+
+  assert.equal(outcome.drops.length, 0);
+  assert.match(outcome.rejected[0]?.reason ?? '', /same page/);
+  assert.deepEqual(texts(outcome), note2.blocks.map((block) => block.text ?? ''));
+});
+
+test('keeps a page that repeats a heading of its own', () => {
+  // note4 has two "Definition" headings introducing two different definitions.
+  const note4 = page('note4.jpg', [
+    { type: 'heading', text: 'Definition' },
+    { type: 'paragraph', text: 'A cut (S, V \\ S) is a partition of V' },
+    { type: 'heading', text: 'Definition' },
+    { type: 'paragraph', text: 'A crossing edge (u, v) for a cut has one vertex in S' },
+  ]);
+
+  const outcome = applyMergeOperations([note4], [drop('p1.b3', 'p1.b1')]);
+
+  assert.equal(outcome.blocks.length, 4);
+  assert.equal(outcome.drops.length, 0);
+});
