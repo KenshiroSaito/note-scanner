@@ -6,18 +6,21 @@ See [`docs/spec.md`](docs/spec.md) for the full specification.
 
 ## Status
 
-Phase 2 (backend, single image). The frontend and backend both work, but are not
-yet connected — that is phase 3.
+Phase 3 (frontend connected). Drop a photo, press **Convert**, and get Markdown
+you can copy.
 
-**Frontend** — images can be selected, previewed, and validated; pressing
-**Convert** shows sample output and makes no network request. Dropped images are
-normalized in place: EXIF orientation applied, resized to 1568px on the long
-edge, re-encoded as JPEG. JPEG and PNG input only; HEIC is rejected for now, see
-decision 6 in the spec.
+**Frontend** — images are normalized in place on drop: EXIF orientation applied,
+resized to 1568px on the long edge, re-encoded as JPEG. JPEG and PNG input only;
+HEIC is rejected for now, see decision 6 in the spec. Convert sends the **first**
+selected image and renders the result as Markdown; formulas can be written as
+LaTeX, plain text, or code spans. Converting every selected image, with progress
+and per-image retry, is phase 4.
 
 **Backend** — `POST /extract` takes one image, calls a vision model, and returns
 schema-validated JSON (the shape in spec section 5). Ollama runs it locally by
 default; the Claude API is a drop-in alternative.
+
+Markdown conversion happens in the frontend, not the server (spec section 5).
 
 ## Development
 
@@ -32,8 +35,18 @@ npm start       # backend:  API at http://localhost:8787
 npm run dev     # backend, restarting on change
 ```
 
+**Using the app needs both processes**: run `npm start` and `npm run serve` in
+separate terminals, then open <http://localhost:8000>. If Convert reports that it
+cannot reach the backend, `npm start` is the one that is missing.
+
 The frontend must be served over HTTP rather than opened as a `file://` URL,
-because ES module imports are blocked on `file://`.
+because ES module imports are blocked on `file://` (and the clipboard needs a
+secure context, which `localhost` provides and `file://` does not).
+
+The backend address is a constant in `public/lib/api.js`. The frontend has no
+build step and no environment variables, so deploying it somewhere else means
+editing that line — revisited when the hosting question in spec section 8 is
+settled.
 
 ### Backend configuration
 

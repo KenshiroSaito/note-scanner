@@ -264,28 +264,116 @@ body {
   font-size: 0.82rem;
 }
 
+/* Conversion status. The container is always present but takes no space until
+   a state class is applied, so an idle page shows no empty box. */
+.status {
+  margin: 0;
+}
+
+.status__elapsed {
+  margin-left: 0.4rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A moving dot, so a long conversion reads as working rather than frozen. */
+.status--busy::before {
+  content: '';
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.5rem;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status--busy::before {
+    animation: none;
+  }
+}
+
+.status--busy,
+.status--info,
+.status--error,
+.status--done {
+  margin-top: 1.25rem;
+  padding: 0.7rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 0.88rem;
+}
+
+.status--error {
+  border-color: #eacfc0;
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.status--done {
+  border-color: #c6ddcd;
+  background: #f0f7f3;
+}
+
 .output {
-  margin-top: 2.5rem;
+  margin-top: 2rem;
+}
+
+.output__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .output h2 {
-  margin: 0 0 0.25rem;
+  margin: 0;
   font-size: 1rem;
 }
 
-.output__note {
-  margin: 0 0 0.75rem;
+.output__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
   font-size: 0.85rem;
 }
 
-.output__json {
+.output__markdown {
   margin: 0;
   padding: 1rem;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
   overflow-x: auto;
-  font-size: 0.8rem;
-  line-height: 1.45;
+  /* Transcribed notes contain long lines; wrap rather than force scrolling. */
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  line-height: 1.55;
 }

@@ -1,16 +1,17 @@
 /**
- * Phase 1 skeleton: image selection, normalization, and preview.
+ * Image selection, normalization, extraction, and Markdown output.
  *
  * The drop zone is a normalization boundary — every accepted file is decoded,
  * oriented, resized, and re-encoded as JPEG before it enters the selection, so
- * previews show exactly what phase 2 will upload.
+ * what is previewed is exactly what gets uploaded.
  *
- * Deliberately makes no network request. Pressing Convert renders dummy data
- * in the schema the backend will return in phase 2.
+ * Convert sends one image to the backend and renders the result as Markdown.
+ * Converting every selected image, with progress and per-image retry, is phase 4.
  */
 import { MAX_IMAGES, dedupe, identityOf, validateSelection } from './lib/validation.js';
 import { normalizeImage } from './lib/normalize.js';
-import { sampleResultFor } from './lib/sample-result.js';
+import { extractImage } from './lib/api.js';
+import { DEFAULT_FORMULA_FLAVOUR, FORMULA_FLAVOURS, resultsToMarkdown } from './lib/markdown.js';
 
 const dropzone = document.querySelector('#dropzone');
 const fileInput = document.querySelector('#file-input');
@@ -21,7 +22,12 @@ const errors = document.querySelector('#errors');
 const clearButton = document.querySelector('#clear');
 const convertButton = document.querySelector('#convert');
 const output = document.querySelector('#output');
-const outputJson = document.querySelector('#output-json');
+const outputMarkdown = document.querySelector('#output-markdown');
+const status = document.querySelector('#status');
+const statusMessage = document.querySelector('#status-message');
+const statusElapsed = document.querySelector('#status-elapsed');
+const flavourSelect = document.querySelector('#flavour');
+const copyButton = document.querySelector('#copy');
 
 /**
  * @typedef {object} Entry
@@ -44,6 +50,43 @@ let dragDepth = 0;
 
 /** Rejections from the most recent drop, shown until the next one. */
 let lastRejected = [];
+
+/**
+ * Results from the last conversion.
+ *
+ * Kept so changing the formula flavour re-renders from memory: a display choice
+ * must never cost another 40-second model call.
+ */
+let lastResults = [];
+
+/** True while a conversion is in flight, so Convert cannot be double-fired. */
+let converting = false;
+
+/** Ticks the elapsed counter while converting; cleared on every exit path. */
+let elapsedTimer = null;
+
+const FLAVOUR_STORAGE_KEY = 'note-scanner.formula-flavour';
+
+/** Reading storage can throw in a private window or with site data blocked. */
+function loadFlavour() {
+  try {
+    const stored = localStorage.getItem(FLAVOUR_STORAGE_KEY);
+    if (stored && FORMULA_FLAVOURS.includes(stored)) return stored;
+  } catch {
+    // Ignore: the default is fine.
+  }
+  return DEFAULT_FORMULA_FLAVOUR;
+}
+
+function saveFlavour(flavour) {
+  try {
+    localStorage.setItem(FLAVOUR_STORAGE_KEY, flavour);
+  } catch {
+    // A remembered preference is a convenience, not a requirement.
+  }
+}
+
+let formulaFlavour = loadFlavour();
 
 function releasePreview(entry) {
   if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
@@ -118,8 +161,11 @@ function clearAll() {
   selection.forEach(releasePreview);
   selection = [];
   lastRejected = [];
+  lastResults = [];
   output.hidden = true;
-  outputJson.textContent = '';
+  outputMarkdown.textContent = '';
+  stopElapsed();
+  setStatus('');
   render();
 }
 
@@ -194,17 +240,98 @@ function render() {
 
   counter.textContent = `${selection.length} / ${MAX_IMAGES}`;
   emptyState.hidden = selection.length > 0;
-  clearButton.disabled = selection.length === 0;
+  clearButton.disabled = selection.length === 0 || converting;
   // Nothing may be converted while an image is still being read, or the output
   // would describe images that are not ready.
-  convertButton.disabled = selection.length === 0 || pending;
+  convertButton.disabled = selection.length === 0 || pending || converting;
+  convertButton.textContent = converting ? 'Converting…' : 'Convert';
 }
 
-function convert() {
-  const results = selection.map((entry, index) => sampleResultFor(entry.name, index));
-  outputJson.textContent = JSON.stringify(results, null, 2);
-  output.hidden = false;
+function setStatus(message, kind = 'info') {
+  // Written to the live region only, so a screen reader hears the message once
+  // rather than hearing the counter tick beside it.
+  statusMessage.textContent = message;
+  status.className = message ? `status status--${kind}` : 'status';
+}
+
+function startElapsed() {
+  const startedAt = Date.now();
+  const tick = () => {
+    statusElapsed.textContent = `${Math.round((Date.now() - startedAt) / 1000)}s`;
+  };
+
+  tick();
+  elapsedTimer = setInterval(tick, 1000);
+}
+
+/** Must run on every exit path, or a timer outlives its conversion. */
+function stopElapsed() {
+  if (elapsedTimer !== null) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+  }
+  statusElapsed.textContent = '';
+}
+
+/** Re-render the Markdown from results already in memory. */
+function renderMarkdown() {
+  const markdown = resultsToMarkdown(lastResults, formulaFlavour);
+  outputMarkdown.textContent = markdown;
+  output.hidden = markdown.length === 0;
+}
+
+async function convert() {
+  const [entry] = selection;
+  if (!entry?.file || converting) return;
+
+  converting = true;
+  lastResults = [];
+  output.hidden = true;
+  // A local model takes tens of seconds, so the status carries a moving dot and
+  // a running count: silence here reads as a hang.
+  setStatus(`Converting ${entry.name}…`, 'busy');
+  startElapsed();
+  render();
+
+  const outcome = await extractImage(entry.file);
+
+  converting = false;
+  stopElapsed();
+
+  if (!outcome.ok) {
+    setStatus(outcome.message, 'error');
+    render();
+    return;
+  }
+
+  lastResults = [outcome.result];
+  const skipped = selection.length - 1;
+  setStatus(
+    skipped > 0
+      ? `Converted ${entry.name}. ${skipped} other image${skipped === 1 ? '' : 's'} were not converted — that arrives in phase 4.`
+      : `Converted ${entry.name}.`,
+    'done',
+  );
+
+  renderMarkdown();
+  render();
   output.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function copyMarkdown() {
+  const markdown = outputMarkdown.textContent;
+  if (!markdown) return;
+
+  try {
+    await navigator.clipboard.writeText(markdown);
+    copyButton.textContent = 'Copied';
+    setTimeout(() => {
+      copyButton.textContent = 'Copy';
+    }, 1500);
+  } catch {
+    // Needs a secure context: localhost qualifies, a file:// page does not.
+    setStatus('Could not copy automatically — select the text and copy it manually.', 'error');
+  }
 }
 
 /* Drag and drop. Every handler preventDefaults, or the browser navigates to the file. */
@@ -243,6 +370,15 @@ fileInput.addEventListener('change', () => {
 
 clearButton.addEventListener('click', clearAll);
 convertButton.addEventListener('click', convert);
+copyButton.addEventListener('click', copyMarkdown);
+
+flavourSelect.value = formulaFlavour;
+flavourSelect.addEventListener('change', () => {
+  formulaFlavour = flavourSelect.value;
+  saveFlavour(formulaFlavour);
+  // Re-renders from lastResults: no second API call.
+  renderMarkdown();
+});
 
 window.addEventListener('pagehide', () => selection.forEach(releasePreview));
 

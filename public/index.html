@@ -55,17 +55,35 @@
         <button id="convert" class="button button--primary" type="button" disabled>
           Convert
         </button>
-        <p class="actions__note">
-          Phase 1 skeleton: this shows sample output and makes no network request.
+        <p id="convert-note" class="actions__note">
+          Converts the first selected image. Multiple images arrive in phase 4.
         </p>
       </section>
 
+      <div id="status" class="status">
+        <!-- Only the message is announced; the counter ticks every second and
+             would otherwise be read out each time. -->
+        <span id="status-message" role="status" aria-live="polite"></span>
+        <span id="status-elapsed" class="status__elapsed" aria-hidden="true"></span>
+      </div>
+
       <section id="output" class="output" aria-labelledby="output-heading" hidden>
-        <h2 id="output-heading">Result</h2>
-        <p class="output__note">
-          Dummy data in the schema from <code>docs/spec.md</code> section 5.
-        </p>
-        <pre id="output-json" class="output__json"></pre>
+        <div class="output__bar">
+          <h2 id="output-heading">Markdown</h2>
+          <div class="output__controls">
+            <label class="field">
+              Formulas
+              <select id="flavour" class="select">
+                <option value="latex">LaTeX ($$)</option>
+                <option value="unicode">Unicode (∑ ⊆)</option>
+                <option value="plain">Plain text</option>
+                <option value="code">Code spans</option>
+              </select>
+            </label>
+            <button id="copy" class="button" type="button">Copy</button>
+          </div>
+        </div>
+        <pre id="output-markdown" class="output__markdown"></pre>
       </section>
     </main>
 

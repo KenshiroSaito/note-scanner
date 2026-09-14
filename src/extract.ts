@@ -9,6 +9,7 @@ import { Hono } from 'hono';
 
 import type { Config } from './config.ts';
 import { ExtractorError, type Extractor } from './extractors/index.ts';
+import { normalizeBlocks } from './normalize-blocks.ts';
 import { extractionResultSchema, type ExtractionResult } from './schema.ts';
 
 /** Formats the browser can produce after phase 1 normalization. */
@@ -49,7 +50,10 @@ async function attempt(
 
   // The model is told the filename but may still echo it wrong; the server
   // knows the truth, so it wins.
-  return { ok: true, result: { ...parsed.data, source_image: image.name } };
+  //
+  // normalizeBlocks then enforces what the prompt can only ask for: LaTeX lives
+  // in formula blocks, never inside prose or list items.
+  return { ok: true, result: normalizeBlocks({ ...parsed.data, source_image: image.name }) };
 }
 
 export function createExtractRoutes({ config, extract }: ExtractRoutes) {
