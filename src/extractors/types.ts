@@ -1,10 +1,10 @@
 /**
- * The extractor interface.
+ * The engine interfaces.
  *
  * Deliberately returns `unknown`: no model is trusted to have produced valid
- * output, so both implementations go through the same Zod gate in the route.
- * That is also what makes switching engines a real comparison rather than two
- * divergent code paths (spec section 4, decision 5).
+ * output, so every engine goes through the same Zod gate in the route. That is
+ * also what makes switching engines a real comparison rather than two divergent
+ * code paths (spec section 4, decision 5).
  */
 export type SourceImage = {
   bytes: Uint8Array;
@@ -13,6 +13,23 @@ export type SourceImage = {
 };
 
 export type Extractor = (image: SourceImage) => Promise<unknown>;
+
+export type GenerateRequest = {
+  prompt: string;
+  /** Sent before the prompt, so the model sees the page before the instructions. */
+  images?: SourceImage[];
+  /** JSON Schema for engines that constrain decoding to it; others ignore it. */
+  jsonSchema?: Record<string, unknown>;
+};
+
+/**
+ * One call to an engine: a prompt, optionally with images, in; parsed JSON out.
+ *
+ * Shared by extraction and merging so the transport details — timeouts, error
+ * mapping, never forwarding upstream text — exist once per engine rather than
+ * once per use.
+ */
+export type Generate = (request: GenerateRequest) => Promise<unknown>;
 
 /** Raised when the engine itself failed, as opposed to returning bad output. */
 export class ExtractorError extends Error {

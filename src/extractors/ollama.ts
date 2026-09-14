@@ -1,5 +1,5 @@
 /**
- * Local extraction via Ollama (spec section 4, decision 5 — the free default).
+ * Local engine via Ollama (spec section 4, decision 5 — the free default).
  *
  * Plain fetch: Ollama's HTTP API is one POST, and a client library would be a
  * dependency for nothing.
@@ -7,7 +7,14 @@
 import type { Config } from '../config.ts';
 import { EXTRACTION_PROMPT } from '../prompt.ts';
 import { extractionJsonSchema } from '../schema.ts';
-import { ExtractorError, parseJsonLoosely, toBase64, type Extractor, type SourceImage } from './types.ts';
+import {
+  ExtractorError,
+  parseJsonLoosely,
+  toBase64,
+  type Extractor,
+  type Generate,
+  type GenerateRequest,
+} from './types.ts';
 
 /**
  * Context window to ask Ollama for.
@@ -28,8 +35,8 @@ const NUM_CTX = 16_384;
  */
 const NUM_PREDICT = 4_096;
 
-export function createOllamaExtractor(config: Config): Extractor {
-  return async function extractWithOllama(image: SourceImage): Promise<unknown> {
+export function createOllamaGenerate(config: Config): Generate {
+  return async function generateWithOllama({ prompt, images, jsonSchema }: GenerateRequest): Promise<unknown> {
     let response: Response;
 
     try {
@@ -38,13 +45,13 @@ export function createOllamaExtractor(config: Config): Extractor {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           model: config.OLLAMA_MODEL,
-          prompt: `${EXTRACTION_PROMPT}\n\nFilename: ${image.name}`,
-          images: [toBase64(image.bytes)],
-          // Constrained decoding against the real schema, which is a far
+          prompt,
+          ...(images?.length ? { images: images.map((image) => toBase64(image.bytes)) } : {}),
+          // Constrained decoding against the caller's schema, which is a far
           // stronger guarantee than asking for JSON in the prompt.
-          format: extractionJsonSchema(),
+          ...(jsonSchema ? { format: jsonSchema } : {}),
           stream: false,
-          // temperature 0: transcription should not be creative.
+          // temperature 0: transcription and merging should not be creative.
           options: { temperature: 0, num_ctx: NUM_CTX, num_predict: NUM_PREDICT },
         }),
         signal: AbortSignal.timeout(config.REQUEST_TIMEOUT_MS),
@@ -72,4 +79,15 @@ export function createOllamaExtractor(config: Config): Extractor {
 
     return parseJsonLoosely(payload.response);
   };
+}
+
+export function createOllamaExtractor(config: Config): Extractor {
+  const generate = createOllamaGenerate(config);
+
+  return (image) =>
+    generate({
+      prompt: `${EXTRACTION_PROMPT}\n\nFilename: ${image.name}`,
+      images: [image],
+      jsonSchema: extractionJsonSchema(),
+    });
 }
