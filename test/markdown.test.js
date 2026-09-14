@@ -51,10 +51,15 @@ test('keeps answer-option prefixes exactly as the model produced them', () => {
   assert.equal(markdown, 'Maximum efficiency?\n\n- A. 20%\n- B. 40%');
 });
 
-test('passes a table through unchanged', () => {
+test('keeps a Markdown table the model wrote itself', () => {
   const table = '| Stage | Q |\n|---|---|\n| Expansion | +Q |';
+  const rendered = blockToMarkdown({ type: 'table', text: table }, 'latex');
 
-  assert.equal(blockToMarkdown({ type: 'table', text: table }), table);
+  for (const cell of ['Stage', 'Q', 'Expansion', '+Q']) {
+    assert.ok(rendered.includes(cell), `${cell} should survive`);
+  }
+  assert.match(rendered, /^\| Stage \| Q \|/);
+  assert.ok(rendered.includes('---'), 'should keep a separator row');
 });
 
 test('renders an unreadable block as a visible marker naming the reason', () => {
@@ -190,4 +195,143 @@ test('converts a fixture containing an unreadable block', () => {
   const document = resultsToMarkdown([sampleResultFor('note2.jpg', 1)]);
 
   assert.match(document, /> \*\*\[unreadable\]\*\*/);
+});
+
+/* --- tables --- */
+
+/** The real block note1.jpg produced, which used to lose three of its strings. */
+const note1Table = {
+  type: 'table',
+  text: 'job overhead',
+  items: ['batch processing', 'time sharing'],
+  note: 'The table is partially filled with text.',
+};
+
+test('renders two-word table text as column headings', () => {
+  const markdown = blockToMarkdown(note1Table, 'latex');
+
+  assert.equal(
+    markdown.split('\n').slice(0, 4).join('\n'),
+    '| job | overhead |\n| --- | --- |\n| batch processing |  |\n| time sharing |  |',
+  );
+});
+
+test('leaves empty cells empty rather than dropping them', () => {
+  const markdown = blockToMarkdown(note1Table, 'latex');
+
+  // Two columns on every row, so a partly-filled board still looks partly filled.
+  for (const line of markdown.split('\n').filter((l) => l.startsWith('|'))) {
+    assert.equal(line.split('|').length - 1, 3, `row should have two cells: ${line}`);
+  }
+});
+
+test('loses nothing from the real note1 table, in any flavour', () => {
+  // The invariant: every string the model returned appears somewhere.
+  for (const flavour of FORMULA_FLAVOURS) {
+    const markdown = blockToMarkdown(note1Table, flavour);
+    for (const fragment of ['job', 'overhead', 'batch processing', 'time sharing', 'partially filled']) {
+      assert.ok(markdown.includes(fragment), `${flavour} dropped "${fragment}"`);
+    }
+  }
+});
+
+test('uses no pipes in the flavours whose apps cannot render tables', () => {
+  for (const flavour of ['unicode', 'plain']) {
+    const markdown = blockToMarkdown(note1Table, flavour);
+    assert.ok(!markdown.includes('|'), `${flavour} should not emit pipe syntax`);
+    assert.match(markdown, /^job \/ overhead/);
+    assert.match(markdown, /^- batch processing$/m);
+  }
+});
+
+test('falls back to a caption and bullets when the text is a sentence', () => {
+  // Four or more words read as prose; inventing columns from that is nonsense.
+  const block = {
+    type: 'table',
+    text: 'Comparison of the scheduling policies',
+    items: ['round robin', 'first come first served'],
+  };
+
+  const markdown = blockToMarkdown(block, 'latex');
+
+  assert.ok(!markdown.includes('|'), 'should not guess columns out of a sentence');
+  assert.match(markdown, /^Comparison of the scheduling policies/);
+  assert.match(markdown, /^- round robin$/m);
+  assert.match(markdown, /^- first come first served$/m);
+});
+
+test('splits explicit pipe columns in the heading and in items', () => {
+  const block = {
+    type: 'table',
+    text: 'Stage | Q | W',
+    items: ['Expansion | +Q | +W', 'Compression | -Q | -W'],
+  };
+
+  const markdown = blockToMarkdown(block, 'latex');
+
+  assert.match(markdown, /^\| Stage \| Q \| W \|/);
+  assert.match(markdown, /^\| Expansion \| \+Q \| \+W \|$/m);
+});
+
+test('pads a row that has fewer cells than there are columns', () => {
+  const block = { type: 'table', text: 'a | b | c', items: ['only one'] };
+
+  assert.match(blockToMarkdown(block, 'latex'), /^\| only one \|  \|  \|$/m);
+});
+
+test('converts a model-written pipe table to bullets for plain-text apps', () => {
+  const table = '| Stage | Q |\n|---|---|\n| Expansion | +Q |';
+  const markdown = blockToMarkdown({ type: 'table', text: table }, 'plain');
+
+  assert.ok(!markdown.includes('|'), 'pipes would paste as noise in Apple Notes');
+  assert.match(markdown, /Stage \/ Q/);
+  assert.match(markdown, /- Expansion — \+Q/);
+});
+
+test('renders a table that has text but no items', () => {
+  assert.equal(blockToMarkdown({ type: 'table', text: 'Results summary' }, 'latex'), 'Results summary');
+});
+
+/* --- notes on any block --- */
+
+test('renders a note attached to a block that is not unreadable', () => {
+  const markdown = blockToMarkdown({ type: 'paragraph', text: 'Body', note: 'partly erased' });
+
+  assert.equal(markdown, 'Body\n\n> partly erased');
+});
+
+test('does not repeat the note on an unreadable block', () => {
+  const markdown = blockToMarkdown({ type: 'unreadable', note: 'corner cut off' });
+
+  assert.equal(markdown, '> **[unreadable]** corner cut off');
+  assert.equal(markdown.match(/corner cut off/g)?.length, 1);
+});
+
+test('loses no string from any block type, in any flavour', () => {
+  const blocks = [
+    { type: 'topic', text: 'Scheduling' },
+    { type: 'heading', text: 'Policies' },
+    { type: 'paragraph', text: 'Round robin is preemptive.', note: 'smudged' },
+    { type: 'list', text: 'Kinds', items: ['batch', 'interactive'] },
+    { type: 'question', text: 'Which is fair?', items: ['A. RR', 'B. FCFS'] },
+    { type: 'definition', text: 'Quantum: the slice length.' },
+    { type: 'formula', text: '\\sum_{i} t_i' },
+    note1Table,
+    { type: 'unreadable', note: 'bottom edge cut off' },
+  ];
+
+  for (const flavour of FORMULA_FLAVOURS) {
+    const markdown = resultsToMarkdown([{ blocks }], flavour);
+
+    for (const block of blocks) {
+      for (const value of [block.text, block.note, ...(block.items ?? [])]) {
+        if (!value || block.type === 'formula') continue;
+        // Table text is split into headings, so check its words individually.
+        const fragments = block === note1Table && value === block.text ? value.split(' ') : [value];
+        for (const fragment of fragments) {
+          assert.ok(markdown.includes(fragment), `${flavour} dropped "${fragment}"`);
+        }
+      }
+    }
+  }
 });

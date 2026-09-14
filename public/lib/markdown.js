@@ -59,6 +59,118 @@ function listItems(items) {
     .join('\n');
 }
 
+/** Flavours whose target apps render a Markdown pipe table. */
+const PIPE_TABLE_FLAVOURS = new Set(['latex', 'code']);
+
+function cells(line) {
+  return line
+    .split('|')
+    .map((cell) => cell.trim())
+    // A leading or trailing pipe produces an empty edge cell, which is not a
+    // column. Interior empties are kept: an empty cell is data.
+    .filter((cell, index, all) => !((index === 0 || index === all.length - 1) && cell === ''));
+}
+
+/** A "|---|:--:|" line carries no content. */
+function isSeparatorRow(line) {
+  return /^\s*\|?[\s:|-]+\|?\s*$/.test(line) && line.includes('-');
+}
+
+/**
+ * Work out the column structure of a table block.
+ *
+ * `text` becomes the header row when it plausibly is one. Two or three short
+ * words read as headers ("job overhead"); four or more read as a sentence, and
+ * inventing columns out of a sentence produces a nonsense table — those fall
+ * back to a caption with a bullet list, which is always lossless.
+ *
+ * @returns {{ headers: string[], rows: string[][], caption: string }}
+ */
+function parseTable(block) {
+  const text = String(block?.text ?? '').trim();
+  const items = (block?.items ?? []).map((item) => String(item).trim()).filter(Boolean);
+  const itemRows = items.map((item) => (item.includes('|') ? cells(item) : [item]));
+
+  // The model sometimes writes a whole Markdown table into `text`.
+  if (text.includes('|') && text.includes('\n')) {
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    const content = lines.filter((line) => !isSeparatorRow(line));
+    const [header, ...body] = content;
+    return {
+      headers: header ? cells(header) : [],
+      rows: [...body.map(cells), ...itemRows],
+      caption: '',
+    };
+  }
+
+  if (text.includes('|')) {
+    return { headers: cells(text), rows: itemRows, caption: '' };
+  }
+
+  const words = text ? text.split(/\s+/) : [];
+  if (words.length >= 2 && words.length <= 3) {
+    return { headers: words, rows: itemRows, caption: '' };
+  }
+
+  // No usable column structure: keep the text as a caption above a list.
+  return { headers: [], rows: itemRows, caption: text };
+}
+
+/** Pad a row to the header width so empty cells stay visible. */
+function padRow(row, width) {
+  const padded = [...row];
+  while (padded.length < width) padded.push('');
+  return padded;
+}
+
+function renderPipeTable({ headers, rows, caption }) {
+  const lines = [];
+  if (caption) lines.push(caption, '');
+
+  if (headers.length > 0) {
+    const width = Math.max(headers.length, ...rows.map((row) => row.length), 1);
+    const header = padRow(headers, width);
+    lines.push(`| ${header.join(' | ')} |`);
+    lines.push(`|${' --- |'.repeat(width)}`);
+    for (const row of rows) lines.push(`| ${padRow(row, width).join(' | ')} |`);
+    return lines.join('\n');
+  }
+
+  // No headers to hang a table on, so the rows become a list.
+  for (const row of rows) lines.push(`- ${row.filter(Boolean).join(' — ')}`);
+  return lines.join('\n');
+}
+
+/**
+ * Plain-text form for apps that render no tables at all.
+ *
+ * Pipes would paste as literal "|---|---|" noise in Apple Notes, which is the
+ * thing these flavours exist to avoid.
+ */
+function renderPlainTable({ headers, rows, caption }) {
+  const lines = [];
+  const heading = caption || headers.join(' / ');
+  if (heading) lines.push(heading, '');
+
+  for (const row of rows) {
+    // An empty cell contributes nothing here: there is no content to lose.
+    const filled = row.filter(Boolean);
+    if (filled.length > 0) lines.push(`- ${filled.join(' — ')}`);
+  }
+
+  return lines.join('\n').trim();
+}
+
+function tableToMarkdown(block, flavour) {
+  const parsed = parseTable(block);
+
+  // With no rows there is no table to draw — a header row on its own is an
+  // empty grid. The text is kept as an ordinary line instead.
+  if (parsed.rows.length === 0) return String(block?.text ?? '').trim();
+
+  return PIPE_TABLE_FLAVOURS.has(flavour) ? renderPipeTable(parsed) : renderPlainTable(parsed);
+}
+
 /**
  * Render one block.
  *
@@ -68,7 +180,7 @@ function listItems(items) {
  * @param {{ type: string, text?: string, items?: string[], note?: string }} block
  * @param {string} [flavour]
  */
-export function blockToMarkdown(block, flavour = DEFAULT_FORMULA_FLAVOUR) {
+function renderBlockBody(block, flavour) {
   const text = String(block?.text ?? '').trim();
 
   switch (block?.type) {
@@ -82,8 +194,7 @@ export function blockToMarkdown(block, flavour = DEFAULT_FORMULA_FLAVOUR) {
       return formatFormula(text, flavour);
 
     case 'table':
-      // The model is asked for a Markdown table, so this passes through.
-      return text;
+      return tableToMarkdown(block, flavour);
 
     case 'unreadable': {
       const note = String(block.note ?? '').trim();
@@ -106,6 +217,28 @@ export function blockToMarkdown(block, flavour = DEFAULT_FORMULA_FLAVOUR) {
       return [text, items].filter(Boolean).join('\n\n');
     }
   }
+}
+
+/**
+ * Render one block, including any note the model attached to it.
+ *
+ * Notes used to render only for `unreadable` blocks and were dropped everywhere
+ * else, which silently lost text the model had actually read — a note on a table
+ * saying it was only partly filled, for instance. Nothing the model returns may
+ * disappear from the output.
+ *
+ * @param {{ type: string, text?: string, items?: string[], note?: string }} block
+ * @param {string} [flavour]
+ */
+export function blockToMarkdown(block, flavour = DEFAULT_FORMULA_FLAVOUR) {
+  const body = renderBlockBody(block, flavour);
+  const note = String(block?.note ?? '').trim();
+
+  // An unreadable block already states its note as its whole body.
+  if (!note || block?.type === 'unreadable') return body;
+
+  const quoted = `> ${note}`;
+  return body ? `${body}\n\n${quoted}` : quoted;
 }
 
 /**
