@@ -7,7 +7,7 @@
  * this is the only file that changes.
  */
 import type { Config } from '../config.ts';
-import { EXTRACTION_PROMPT, MERGE_PROMPT } from '../prompt.ts';
+import { EXTRACTION_PROMPT } from '../prompt.ts';
 import {
   ExtractorError,
   parseJsonLoosely,
@@ -15,7 +15,6 @@ import {
   type Extractor,
   type Generate,
   type GenerateRequest,
-  type Merger,
 } from './types.ts';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
@@ -67,8 +66,8 @@ export function createClaudeGenerate(config: Config): Generate {
         body: JSON.stringify({
           model: config.CLAUDE_MODEL,
           max_tokens: 16_000,
-          // A page of notes is a bounded task, so the top of the effort range
-          // would spend tokens without reading or merging any better.
+          // A page of notes is a bounded transcription task, so the top of the
+          // effort range would spend tokens without reading the page better.
           output_config: { effort: 'medium' },
           fallbacks: [{ model: FALLBACK_MODEL }],
           messages: [{ role: 'user', content }],
@@ -126,10 +125,4 @@ export function createClaudeExtractor(config: Config): Extractor {
       prompt: `${EXTRACTION_PROMPT}\n\nFilename: ${image.name}`,
       images: [image],
     });
-}
-
-export function createClaudeMerger(config: Config): Merger {
-  const generate = createClaudeGenerate(config);
-
-  return (listing) => generate({ prompt: `${MERGE_PROMPT}\n\n${listing}` });
 }

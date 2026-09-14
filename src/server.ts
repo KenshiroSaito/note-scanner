@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 
 import { loadConfig, redacted } from './config.ts';
-import { createExtractor, createMerger } from './extractors/index.ts';
+import { createExtractor } from './extractors/index.ts';
 import { createExtractRoutes } from './extract.ts';
 import { createMergeRoutes } from './merge-route.ts';
 
@@ -28,7 +28,7 @@ app.get('/health', (context) =>
   }),
 );
 app.route('/', createExtractRoutes({ config, extract: createExtractor(config) }));
-app.route('/', createMergeRoutes({ merge: createMerger(config) }));
+app.route('/', createMergeRoutes());
 
 serve({ fetch: app.fetch, port: config.PORT }, (info) => {
   console.log(`note-scanner backend on http://localhost:${info.port}`);

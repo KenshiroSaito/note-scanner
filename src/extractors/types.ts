@@ -31,14 +31,6 @@ export type GenerateRequest = {
  */
 export type Generate = (request: GenerateRequest) => Promise<unknown>;
 
-/**
- * Pass 2: the page listing in, raw merge operations out.
- *
- * Returns `unknown` for the same reason extraction does: the route checks the
- * shape, and src/merge.ts verifies every operation before anything is applied.
- */
-export type Merger = (listing: string) => Promise<unknown>;
-
 /** Raised when the engine itself failed, as opposed to returning bad output. */
 export class ExtractorError extends Error {
   readonly kind: 'unreachable' | 'timeout' | 'refused' | 'upstream';

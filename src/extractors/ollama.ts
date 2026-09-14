@@ -5,8 +5,7 @@
  * dependency for nothing.
  */
 import type { Config } from '../config.ts';
-import { mergeOperationsJsonSchema } from '../merge.ts';
-import { EXTRACTION_PROMPT, MERGE_PROMPT } from '../prompt.ts';
+import { EXTRACTION_PROMPT } from '../prompt.ts';
 import { extractionJsonSchema } from '../schema.ts';
 import {
   ExtractorError,
@@ -15,7 +14,6 @@ import {
   type Extractor,
   type Generate,
   type GenerateRequest,
-  type Merger,
 } from './types.ts';
 
 /**
@@ -53,7 +51,7 @@ export function createOllamaGenerate(config: Config): Generate {
           // stronger guarantee than asking for JSON in the prompt.
           ...(jsonSchema ? { format: jsonSchema } : {}),
           stream: false,
-          // temperature 0: transcription and merging should not be creative.
+          // temperature 0: transcription should not be creative.
           options: { temperature: 0, num_ctx: NUM_CTX, num_predict: NUM_PREDICT },
         }),
         signal: AbortSignal.timeout(config.REQUEST_TIMEOUT_MS),
@@ -91,17 +89,5 @@ export function createOllamaExtractor(config: Config): Extractor {
       prompt: `${EXTRACTION_PROMPT}\n\nFilename: ${image.name}`,
       images: [image],
       jsonSchema: extractionJsonSchema(),
-    });
-}
-
-export function createOllamaMerger(config: Config): Merger {
-  const generate = createOllamaGenerate(config);
-
-  // Text only, on the same model as extraction: that model is already loaded,
-  // and loading a separate text model would compete for the same memory.
-  return (listing) =>
-    generate({
-      prompt: `${MERGE_PROMPT}\n\n${listing}`,
-      jsonSchema: mergeOperationsJsonSchema(),
     });
 }
