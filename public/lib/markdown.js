@@ -16,6 +16,24 @@ export const FORMULA_FLAVOURS = ['latex', 'unicode', 'plain', 'code'];
 
 export const DEFAULT_FORMULA_FLAVOUR = 'latex';
 
+/**
+ * Output templates.
+ *
+ * A template changes only how blocks become Markdown, never what was extracted,
+ * so switching one re-renders from memory with no model call (spec decision 10).
+ * - lecture: headings, lists, and quoted notes — the default document
+ * - practice: questions numbered across the document, options lettered
+ * - freeform: just the text, with no heading or quote markup
+ */
+export const TEMPLATES = ['lecture', 'practice', 'freeform'];
+
+export const DEFAULT_TEMPLATE = 'lecture';
+
+/** State for one render: question numbers run across every page of a document. */
+function newRenderContext() {
+  return { questions: 0 };
+}
+
 /** Separates one image's section from the next in a combined document. */
 const SECTION_SEPARATOR = '\n\n---\n\n';
 
@@ -171,6 +189,68 @@ function tableToMarkdown(block, flavour) {
   return PIPE_TABLE_FLAVOURS.has(flavour) ? renderPipeTable(parsed) : renderPlainTable(parsed);
 }
 
+/** "3.", "Q3)", "Question 3:" — a number the board already gave the question. */
+const QUESTION_NUMBER = /^\s*(?:q(?:uestion)?\s*)?\d+\s*[.):]/i;
+
+/** "A. ", "b) ", "(c) " — a letter the board already gave an option. */
+const OPTION_LETTER = /^\s*(?:\([a-z]\)|[a-z][.)])\s/i;
+
+function optionLabel(index) {
+  return index < 26 ? `${String.fromCharCode(65 + index)}.` : `${index + 1}.`;
+}
+
+/**
+ * A question in the Practice questions template.
+ *
+ * Numbered across the whole document so a merged set of pages reads as one
+ * problem sheet. Existing numbering and lettering on the board wins: a question
+ * that already starts with a number gets no second one, and options are lettered
+ * only when none of them has a letter, so labels are never doubled or mixed.
+ */
+function renderPracticeQuestion(block, context) {
+  const text = String(block.text ?? '').trim();
+  const items = (block.items ?? []).map((item) => String(item).trim()).filter(Boolean);
+  if (!text && items.length === 0) return '';
+
+  context.questions += 1;
+  const lead = QUESTION_NUMBER.test(text) ? text : `**Q${context.questions}.**${text ? ` ${text}` : ''}`;
+
+  const alreadyLettered = items.some((item) => OPTION_LETTER.test(item));
+  const options = items
+    .map((item, index) => `- ${alreadyLettered ? item : `${optionLabel(index)} ${item}`}`)
+    .join('\n');
+
+  return [lead, options].filter(Boolean).join('\n\n');
+}
+
+/**
+ * A block in the Freeform template: the words, without heading or quote markup.
+ *
+ * Lists keep their "- " lines because the list is content, and the unreadable
+ * marker stays because a gap you cannot see is a gap you will not fix.
+ */
+function renderFreeformBody(block, flavour) {
+  const text = String(block?.text ?? '').trim();
+
+  switch (block?.type) {
+    case 'formula':
+      return formatFormula(text, flavour);
+
+    case 'table': {
+      const parsed = parseTable(block);
+      return parsed.rows.length === 0 ? text : renderPlainTable(parsed);
+    }
+
+    case 'unreadable': {
+      const note = String(block.note ?? '').trim();
+      return note ? `[unreadable] ${note}` : '[unreadable]';
+    }
+
+    default:
+      return [text, listItems(block?.items)].filter(Boolean).join('\n\n');
+  }
+}
+
 /**
  * Render one block.
  *
@@ -178,9 +258,14 @@ function tableToMarkdown(block, flavour) {
  * filters out — that is what keeps stray blank lines out of the document.
  *
  * @param {{ type: string, text?: string, items?: string[], note?: string }} block
- * @param {string} [flavour]
+ * @param {string} flavour
+ * @param {string} template
+ * @param {{ questions: number }} context
  */
-function renderBlockBody(block, flavour) {
+function renderBlockBody(block, flavour, template, context) {
+  if (template === 'freeform') return renderFreeformBody(block, flavour);
+  if (template === 'practice' && block?.type === 'question') return renderPracticeQuestion(block, context);
+
   const text = String(block?.text ?? '').trim();
 
   switch (block?.type) {
@@ -229,16 +314,23 @@ function renderBlockBody(block, flavour) {
  *
  * @param {{ type: string, text?: string, items?: string[], note?: string }} block
  * @param {string} [flavour]
+ * @param {string} [template] one of TEMPLATES
+ * @param {{ questions: number }} [context] shared across a document's blocks
  */
-export function blockToMarkdown(block, flavour = DEFAULT_FORMULA_FLAVOUR) {
-  const body = renderBlockBody(block, flavour);
+export function blockToMarkdown(
+  block,
+  flavour = DEFAULT_FORMULA_FLAVOUR,
+  template = DEFAULT_TEMPLATE,
+  context = newRenderContext(),
+) {
+  const body = renderBlockBody(block, flavour, template, context);
   const note = String(block?.note ?? '').trim();
 
   // An unreadable block already states its note as its whole body.
   if (!note || block?.type === 'unreadable') return body;
 
-  const quoted = `> ${note}`;
-  return body ? `${body}\n\n${quoted}` : quoted;
+  const annotation = template === 'freeform' ? `(note: ${note})` : `> ${note}`;
+  return body ? `${body}\n\n${annotation}` : annotation;
 }
 
 /**
@@ -249,19 +341,27 @@ export function blockToMarkdown(block, flavour = DEFAULT_FORMULA_FLAVOUR) {
  *
  * @param {{ blocks?: Array<object> }} result
  * @param {string} [flavour]
+ * @param {string} [template]
+ * @param {{ questions: number }} [context]
  */
-export function resultToMarkdown(result, flavour = DEFAULT_FORMULA_FLAVOUR) {
+export function resultToMarkdown(
+  result,
+  flavour = DEFAULT_FORMULA_FLAVOUR,
+  template = DEFAULT_TEMPLATE,
+  context = newRenderContext(),
+) {
   // A page that could not be read is marked where it belongs, rather than left
   // out. A document that looks complete while a page is missing from the middle
   // is the failure this avoids — the reader has no way to know to go back to the
   // photo for something they were never shown was absent.
   if (result?.error) {
     const name = String(result.source_image ?? 'this image').trim() || 'this image';
-    return `> **[failed]** ${name} — ${String(result.error).trim()}`;
+    const failure = `[failed] ${name} — ${String(result.error).trim()}`;
+    return template === 'freeform' ? failure : `> **[failed]**${failure.slice('[failed]'.length)}`;
   }
 
   return (result?.blocks ?? [])
-    .map((block) => blockToMarkdown(block, flavour))
+    .map((block) => blockToMarkdown(block, flavour, template, context))
     .map((markdown) => markdown.trim())
     .filter(Boolean)
     .join('\n\n');
@@ -278,10 +378,12 @@ export function resultToMarkdown(result, flavour = DEFAULT_FORMULA_FLAVOUR) {
  *
  * @param {Array<object>} results
  * @param {string} [flavour]
+ * @param {string} [template]
  */
-export function resultsToMarkdown(results, flavour = DEFAULT_FORMULA_FLAVOUR) {
+export function resultsToMarkdown(results, flavour = DEFAULT_FORMULA_FLAVOUR, template = DEFAULT_TEMPLATE) {
+  const context = newRenderContext();
   const sections = (results ?? [])
-    .map((result) => resultToMarkdown(result, flavour))
+    .map((result) => resultToMarkdown(result, flavour, template, context))
     .filter(Boolean);
 
   if (sections.length === 0) return '';
@@ -305,21 +407,28 @@ export function resultsToMarkdown(results, flavour = DEFAULT_FORMULA_FLAVOUR) {
  * @param {Array<{ afterPage: number, source_image: string, error: string }>} [failures]
  *   `afterPage` is the index of the merged page it follows, or -1 to lead
  * @param {string} [flavour]
+ * @param {string} [template]
  */
-export function mergedToMarkdown(blocks, failures = [], flavour = DEFAULT_FORMULA_FLAVOUR) {
+export function mergedToMarkdown(
+  blocks,
+  failures = [],
+  flavour = DEFAULT_FORMULA_FLAVOUR,
+  template = DEFAULT_TEMPLATE,
+) {
   // Stable sort, so failures between the same two pages keep their order.
   const pending = [...failures].sort((a, b) => a.afterPage - b.afterPage);
   const parts = [];
+  const context = newRenderContext();
 
   const placeFailuresBefore = (page) => {
     while (pending.length > 0 && pending[0].afterPage < page) {
-      parts.push(resultToMarkdown(pending.shift(), flavour));
+      parts.push(resultToMarkdown(pending.shift(), flavour, template, context));
     }
   };
 
   for (const block of blocks ?? []) {
     placeFailuresBefore(block.page);
-    const markdown = blockToMarkdown(block, flavour).trim();
+    const markdown = blockToMarkdown(block, flavour, template, context).trim();
     if (markdown) parts.push(markdown);
   }
   placeFailuresBefore(Infinity);

@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 
 import {
   DEFAULT_FORMULA_FLAVOUR,
+  DEFAULT_TEMPLATE,
   FORMULA_FLAVOURS,
+  TEMPLATES,
   blockToMarkdown,
   formatFormula,
+  mergedToMarkdown,
   resultToMarkdown,
   resultsToMarkdown,
 } from '../public/lib/markdown.js';
@@ -373,4 +376,153 @@ test('shows the failure marker in every flavour', () => {
 
 test('falls back to a readable name when the failure has none', () => {
   assert.match(resultToMarkdown({ error: 'boom' }), /this image/);
+});
+
+/* --- templates --- */
+
+/** Every block type, with notes, items, and a table — the no-loss fixture. */
+const everyBlockType = [
+  { type: 'topic', text: 'Scheduling' },
+  { type: 'heading', text: 'Policies' },
+  { type: 'paragraph', text: 'Round robin is preemptive.', note: 'smudged' },
+  { type: 'list', text: 'Kinds', items: ['batch', 'interactive'] },
+  { type: 'question', text: 'Which is fair?', items: ['A. RR', 'B. FCFS'] },
+  { type: 'question', text: 'Which starves?', items: ['SJF', 'RR'] },
+  { type: 'definition', text: 'Quantum: the slice length.' },
+  { type: 'formula', text: '\\sum_{i} t_i' },
+  note1Table,
+  { type: 'unreadable', note: 'bottom edge cut off' },
+];
+
+test('lists three templates and defaults to lecture notes', () => {
+  assert.deepEqual(TEMPLATES, ['lecture', 'practice', 'freeform']);
+  assert.equal(DEFAULT_TEMPLATE, 'lecture');
+});
+
+test('lecture notes is exactly the output from before templates existed', () => {
+  for (const flavour of FORMULA_FLAVOURS) {
+    const before = resultsToMarkdown([{ blocks: everyBlockType }], flavour);
+    assert.equal(resultsToMarkdown([{ blocks: everyBlockType }], flavour, 'lecture'), before);
+    // An unknown template must not break the document.
+    assert.equal(resultsToMarkdown([{ blocks: everyBlockType }], flavour, 'nonsense'), before);
+  }
+});
+
+test('loses no string in any template and any flavour', () => {
+  for (const template of TEMPLATES) {
+    for (const flavour of FORMULA_FLAVOURS) {
+      const markdown = resultsToMarkdown([{ blocks: everyBlockType }], flavour, template);
+
+      for (const block of everyBlockType) {
+        for (const value of [block.text, block.note, ...(block.items ?? [])]) {
+          if (!value || block.type === 'formula') continue;
+          const fragments = block === note1Table && value === block.text ? value.split(' ') : [value];
+          for (const fragment of fragments) {
+            assert.ok(markdown.includes(fragment), `${template}/${flavour} dropped "${fragment}"`);
+          }
+        }
+      }
+      assert.ok(markdown.includes('t_i') || markdown.includes('tᵢ'), `${template}/${flavour} dropped the formula`);
+    }
+  }
+});
+
+test('practice numbers questions and letters their options', () => {
+  const markdown = blockToMarkdown(
+    { type: 'question', text: 'Which starves?', items: ['SJF', 'RR'] },
+    'latex',
+    'practice',
+  );
+
+  assert.equal(markdown, '**Q1.** Which starves?\n\n- A. SJF\n- B. RR');
+});
+
+test('practice keeps the letters and numbers the board already has', () => {
+  const lettered = blockToMarkdown(
+    { type: 'question', text: 'Which is fair?', items: ['A. RR', '(b) FCFS'] },
+    'latex',
+    'practice',
+  );
+  assert.equal(lettered, '**Q1.** Which is fair?\n\n- A. RR\n- (b) FCFS');
+
+  for (const text of ['3. Define a quantum.', 'Q4) Why preempt?', 'Question 5: Compare them.']) {
+    const numbered = blockToMarkdown({ type: 'question', text }, 'latex', 'practice');
+    assert.equal(numbered, text, 'a numbered question should not get a second number');
+  }
+});
+
+test('practice numbers questions across pages, and each render starts at Q1', () => {
+  const pages = [
+    { blocks: [{ type: 'question', text: 'First?' }] },
+    { source_image: 'lost.jpg', error: 'timed out' },
+    { blocks: [{ type: 'heading', text: 'Part B' }, { type: 'question', text: 'Second?' }] },
+  ];
+
+  const first = resultsToMarkdown(pages, 'latex', 'practice');
+  const second = resultsToMarkdown(pages, 'latex', 'practice');
+
+  assert.match(first, /\*\*Q1\.\*\* First\?/);
+  assert.match(first, /\*\*Q2\.\*\* Second\?/);
+  assert.match(first, /^## Part B$/m, 'other blocks render as lecture notes');
+  assert.match(first, /\[failed\]\*\* lost\.jpg/, 'failures keep the lecture marker');
+  assert.equal(second, first);
+});
+
+test('practice numbers questions through the merged document', () => {
+  const blocks = [
+    { type: 'question', text: 'First?', page: 0 },
+    { type: 'paragraph', text: 'Context.', page: 1 },
+    { type: 'question', text: 'Second?', page: 1 },
+  ];
+
+  const markdown = mergedToMarkdown(blocks, [], 'latex', 'practice');
+
+  assert.equal(markdown, '**Q1.** First?\n\nContext.\n\n**Q2.** Second?\n');
+});
+
+test('practice skips an empty question without spending a number', () => {
+  const markdown = resultsToMarkdown(
+    [{ blocks: [{ type: 'question', text: ' ', items: [] }, { type: 'question', text: 'Real?' }] }],
+    'latex',
+    'practice',
+  );
+
+  assert.equal(markdown, '**Q1.** Real?\n');
+});
+
+test('freeform keeps the words without heading or quote markup', () => {
+  const markdown = resultsToMarkdown(
+    [
+      {
+        blocks: [
+          { type: 'topic', text: 'Scheduling' },
+          { type: 'heading', text: 'Policies' },
+          { type: 'paragraph', text: 'Round robin.', note: 'smudged' },
+          { type: 'list', items: ['batch'] },
+          { type: 'unreadable', note: 'corner cut off' },
+        ],
+      },
+    ],
+    'latex',
+    'freeform',
+  );
+
+  assert.equal(
+    markdown,
+    'Scheduling\n\nPolicies\n\nRound robin.\n\n(note: smudged)\n\n- batch\n\n[unreadable] corner cut off\n',
+  );
+});
+
+test('freeform still marks failures and draws tables without pipes', () => {
+  const failure = resultToMarkdown({ source_image: 'x.jpg', error: 'boom' }, 'latex', 'freeform');
+  assert.equal(failure, '[failed] x.jpg — boom');
+
+  const table = blockToMarkdown(note1Table, 'latex', 'freeform');
+  assert.ok(!table.includes('|'));
+  assert.match(table, /^- batch processing$/m);
+});
+
+test('freeform still honours the formula flavour', () => {
+  assert.equal(blockToMarkdown({ type: 'formula', text: 'x = 1' }, 'latex', 'freeform'), '$$\nx = 1\n$$');
+  assert.equal(blockToMarkdown({ type: 'formula', text: 'x = 1' }, 'code', 'freeform'), '`x = 1`');
 });

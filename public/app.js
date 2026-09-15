@@ -15,7 +15,9 @@ import { extractImage, fetchRuntimeConfig, mergePages, warmUpModel } from './lib
 import { runWithConcurrency } from './lib/queue.js';
 import {
   DEFAULT_FORMULA_FLAVOUR,
+  DEFAULT_TEMPLATE,
   FORMULA_FLAVOURS,
+  TEMPLATES,
   mergedToMarkdown,
   resultsToMarkdown,
 } from './lib/markdown.js';
@@ -34,6 +36,7 @@ const status = document.querySelector('#status');
 const statusMessage = document.querySelector('#status-message');
 const statusElapsed = document.querySelector('#status-elapsed');
 const flavourSelect = document.querySelector('#flavour');
+const templateSelect = document.querySelector('#template');
 const viewField = document.querySelector('#view-field');
 const viewSelect = document.querySelector('#view');
 const copyButton = document.querySelector('#copy');
@@ -69,8 +72,8 @@ let lastRejected = [];
 /**
  * Results from the last conversion.
  *
- * Kept so changing the formula flavour re-renders from memory: a display choice
- * must never cost another 40-second model call.
+ * Kept so changing the formula flavour or template re-renders from memory: a
+ * display choice must never cost another 40-second model call.
  */
 let lastResults = [];
 
@@ -103,27 +106,29 @@ let mergedDocument = null;
 let view = 'pages';
 
 const FLAVOUR_STORAGE_KEY = 'note-scanner.formula-flavour';
+const TEMPLATE_STORAGE_KEY = 'note-scanner.template';
 
 /** Reading storage can throw in a private window or with site data blocked. */
-function loadFlavour() {
+function loadChoice(key, allowed, fallback) {
   try {
-    const stored = localStorage.getItem(FLAVOUR_STORAGE_KEY);
-    if (stored && FORMULA_FLAVOURS.includes(stored)) return stored;
+    const stored = localStorage.getItem(key);
+    if (stored && allowed.includes(stored)) return stored;
   } catch {
     // Ignore: the default is fine.
   }
-  return DEFAULT_FORMULA_FLAVOUR;
+  return fallback;
 }
 
-function saveFlavour(flavour) {
+function saveChoice(key, value) {
   try {
-    localStorage.setItem(FLAVOUR_STORAGE_KEY, flavour);
+    localStorage.setItem(key, value);
   } catch {
     // A remembered preference is a convenience, not a requirement.
   }
 }
 
-let formulaFlavour = loadFlavour();
+let formulaFlavour = loadChoice(FLAVOUR_STORAGE_KEY, FORMULA_FLAVOURS, DEFAULT_FORMULA_FLAVOUR);
+let template = loadChoice(TEMPLATE_STORAGE_KEY, TEMPLATES, DEFAULT_TEMPLATE);
 
 function releasePreview(entry) {
   if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
@@ -397,7 +402,7 @@ function renderMarkdown() {
   let markdown;
 
   if (view === 'merged' && mergedDocument) {
-    markdown = mergedToMarkdown(mergedDocument.blocks, mergedDocument.failures, formulaFlavour);
+    markdown = mergedToMarkdown(mergedDocument.blocks, mergedDocument.failures, formulaFlavour, template);
   } else {
     const results = selection
       .map((entry) =>
@@ -405,7 +410,7 @@ function renderMarkdown() {
         (entry.status === 'failed' ? { source_image: entry.name, error: entry.error } : null),
       )
       .filter(Boolean);
-    markdown = resultsToMarkdown(results, formulaFlavour);
+    markdown = resultsToMarkdown(results, formulaFlavour, template);
   }
 
   outputMarkdown.textContent = markdown;
@@ -643,8 +648,16 @@ copyButton.addEventListener('click', copyMarkdown);
 flavourSelect.value = formulaFlavour;
 flavourSelect.addEventListener('change', () => {
   formulaFlavour = flavourSelect.value;
-  saveFlavour(formulaFlavour);
+  saveChoice(FLAVOUR_STORAGE_KEY, formulaFlavour);
   // Re-renders from memory: no second API call.
+  renderMarkdown();
+});
+
+templateSelect.value = template;
+templateSelect.addEventListener('change', () => {
+  template = TEMPLATES.includes(templateSelect.value) ? templateSelect.value : DEFAULT_TEMPLATE;
+  saveChoice(TEMPLATE_STORAGE_KEY, template);
+  // A template changes rendering only, so this is free too.
   renderMarkdown();
 });
 
