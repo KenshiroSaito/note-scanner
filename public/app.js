@@ -13,6 +13,7 @@ import { MAX_IMAGES, dedupe, identityOf, validateSelection } from './lib/validat
 import { normalizeImage } from './lib/normalize.js';
 import { extractImage, fetchRuntimeConfig, mergePages, warmUpModel } from './lib/api.js';
 import { runWithConcurrency } from './lib/queue.js';
+import { downloadFilename, downloadText } from './lib/download.js';
 import {
   DEFAULT_FORMULA_FLAVOUR,
   DEFAULT_TEMPLATE,
@@ -40,6 +41,7 @@ const templateSelect = document.querySelector('#template');
 const viewField = document.querySelector('#view-field');
 const viewSelect = document.querySelector('#view');
 const copyButton = document.querySelector('#copy');
+const downloadButton = document.querySelector('#download');
 const stopButton = document.querySelector('#stop');
 const retryButton = document.querySelector('#retry');
 const progress = document.querySelector('#progress');
@@ -605,6 +607,16 @@ async function copyMarkdown() {
   }
 }
 
+/**
+ * Save exactly what Copy would copy: the view, template, and flavour on screen.
+ * Reading the rendered text, rather than rendering again, is what guarantees it.
+ */
+function downloadMarkdown() {
+  const markdown = outputMarkdown.textContent;
+  if (!markdown) return;
+  downloadText(markdown, downloadFilename());
+}
+
 /* Drag and drop. Every handler preventDefaults, or the browser navigates to the file. */
 dropzone.addEventListener('dragenter', (event) => {
   event.preventDefault();
@@ -644,6 +656,7 @@ convertButton.addEventListener('click', convert);
 stopButton.addEventListener('click', stopRun);
 retryButton.addEventListener('click', retryFailed);
 copyButton.addEventListener('click', copyMarkdown);
+downloadButton.addEventListener('click', downloadMarkdown);
 
 flavourSelect.value = formulaFlavour;
 flavourSelect.addEventListener('change', () => {
