@@ -25,11 +25,11 @@ function texts(outcome: MergeOutcome): string[] {
 }
 
 /**
- * The invariant pass 2 is built around: nothing the model read disappears.
+ * The invariant pass 2 is built around: no board writing the model read disappears.
  *
  * - a dropped block's run must itself still be present
- * - a superseded block's board words must all appear in the output, and its
- *   note verbatim, since the note travels to the replacement
+ * - a superseded block's board words must all appear in the output; its note is
+ *   deliberately discarded, because it described the earlier photo
  * - every other string must appear verbatim
  */
 function assertNothingLost(pages: ExtractionResult[], outcome: MergeOutcome) {
@@ -54,7 +54,6 @@ function assertNothingLost(pages: ExtractionResult[], outcome: MergeOutcome) {
       for (const word of tokens(board)) {
         assert.ok(outputWords.has(word), `superseded ${entry.id} lost the word "${word}"`);
       }
-      if (entry.block.note) assert.ok(output.includes(entry.block.note.trim()), `lost the note of ${entry.id}`);
       continue;
     }
 
@@ -126,8 +125,10 @@ test('merges note5 and note6: one Notation section, completed, where it first ap
   assert.ok(lines.some((line) => line.includes('algorithm') && line.startsWith('d[v] should indicate')));
   assert.ok(!lines.some((line) => /Notation array|cost of array/.test(line)));
 
-  // The model's own note on note5 travels with the replacement rather than vanishing.
-  assert.equal(outcome.blocks[4]!.note, note5.blocks[1]!.note);
+  // note5's note said the last item was incomplete. Under the completed sentence
+  // that would be false, so it is gone rather than carried across.
+  assert.ok(!outcome.blocks.some((block) => block.note?.includes('incomplete')));
+  assert.equal(outcome.blocks[4]!.note, undefined);
 
   assertNothingLost(pages, outcome);
 });
@@ -240,6 +241,18 @@ test('is deterministic', () => {
 /* --- verifying supersede --- */
 
 const longLine = 'all edge weights in this graph are distinct';
+
+test('discards the note on a replaced block but keeps the note on its replacement', () => {
+  const pages = [
+    page('a.jpg', [{ type: 'paragraph', text: longLine, note: 'the end of the line is cut off' }]),
+    page('b.jpg', [{ type: 'paragraph', text: `${longLine} and every tree is unique`, note: 'slightly blurred' }]),
+  ];
+
+  const outcome = mergeDocument(pages);
+
+  assert.deepEqual(outcome.supersedes, [{ id: 'p1.b1', by: ['p2.b1'] }]);
+  assert.deepEqual(outcome.blocks.map((block) => block.note), ['slightly blurred']);
+});
 
 test('refuses to supersede when the words are not in the same order', () => {
   const pages = [

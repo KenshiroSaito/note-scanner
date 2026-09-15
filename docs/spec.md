@@ -98,11 +98,13 @@ each verified before it is applied:
   blocks already covers (at least 80% overlap, at most one word missing).
 - **Supersede** an earlier block with a later run that contains all of its board
   writing in the same order — a later photo of the same writing, more complete.
-  The later text takes the earlier block's place, so its section stays together,
-  and any note the model attached to the earlier block travels with it.
+  The later text takes the earlier block's place, so its section stays together.
+  A note the model attached to the earlier block is discarded: it described what
+  the earlier photo showed, and under the completed writing a note such as "the
+  last item is incomplete" would be false rather than merely redundant.
 
 A block under six words is removed only as part of a repeated run, so short generic
-lines such as "Definition" survive. No text the model read can be lost.
+lines such as "Definition" survive. No board writing the model read can be lost.
 
 **Joins were removed.** An earlier version joined a block ending without
 punctuation to a next-page block starting in lower case. On two photos of one board
