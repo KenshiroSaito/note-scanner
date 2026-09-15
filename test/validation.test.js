@@ -46,14 +46,18 @@ test('recognises HEIC by MIME type and by extension', () => {
   assert.ok(!isHeic(file('a.jpg', 'image/jpeg')));
 });
 
-test('rejects HEIC with a message naming the format, not a generic one', () => {
-  for (const heic of [file('IMG_0412.heic', 'image/heic'), file('IMG_0412.HEIC', '')]) {
-    const result = checkFile(heic);
-    assert.equal(result.ok, false);
-    assert.equal(result.reason, 'heic-unsupported');
-    assert.match(result.message, /HEIC/);
-    assert.match(result.message, /JPEG/);
+test('accepts HEIC, the iPhone default, by MIME type and by extension', () => {
+  for (const heic of [
+    file('IMG_0412.heic', 'image/heic'),
+    file('IMG_0412.heif', 'image/heif'),
+    file('IMG_0412.HEIC', ''),
+  ]) {
+    assert.deepEqual(checkFile(heic), { ok: true });
   }
+});
+
+test('names every accepted format when refusing one', () => {
+  assert.match(checkFile(file('notes.pdf', 'application/pdf')).message, /JPEG, PNG, or HEIC/);
 });
 
 test('rejects empty files', () => {
@@ -106,12 +110,11 @@ test('partitions a mixed selection without losing files', () => {
 
   const { accepted, rejected } = validateSelection(files);
 
-  assert.deepEqual(accepted.map((f) => f.name), ['good.jpg', 'shot.png']);
+  assert.deepEqual(accepted.map((f) => f.name), ['good.jpg', 'photo.heic', 'shot.png']);
   assert.deepEqual(rejected.map((r) => [r.file.name, r.reason]), [
     ['notes.pdf', 'unsupported-type'],
     ['blank.png', 'empty'],
     ['huge.png', 'too-large'],
-    ['photo.heic', 'heic-unsupported'],
   ]);
   assert.equal(accepted.length + rejected.length, files.length);
 });
