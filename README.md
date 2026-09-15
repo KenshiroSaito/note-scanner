@@ -22,11 +22,13 @@ text, or code spans.
 **Backend** — `POST /extract` takes one image, calls a vision model, and returns
 schema-validated JSON (the shape in spec section 5). Ollama runs it locally by
 default; the Claude API is a drop-in alternative. `POST /merge` takes the pass-1
-results of a run and merges them in code, with no model call: a block whose words
-already appear in consecutive blocks on an earlier page is dropped, and a
-sentence cut across a page boundary is rejoined. Nothing is rewritten, so no text
-the model read can be lost. Decision 3 in the spec explains why pass 2 does not
-use the model.
+results of a run and merges them in code, with no model call. A block whose words
+already appear in consecutive blocks on an earlier page is dropped, and when a
+later photo of the board contains an earlier block's writing in full — because
+more was written in between — the later text replaces the earlier block where it
+stands. Text is never joined across pages, since nothing proves one fragment
+continues another. Nothing is rewritten, so no text the model read can be lost.
+Decision 3 in the spec explains the design and why pass 2 does not use the model.
 
 Markdown conversion happens in the frontend, not the server (spec section 5).
 

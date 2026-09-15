@@ -77,28 +77,41 @@ JSON by the vision LLM. Can run in parallel.
 **Pass 2 (whole set):** All pass-1 results are merged into one document —
 deterministically, in code, with no LLM call.
 
-**Reason:** A single topic in lecture notes often spans several pages, and the
-same board is often photographed more than once. Simply concatenating per-image
-results repeats whole sections and leaves sentences cut in half. Pass 2 removes
-repeated content and reconnects sentences.
+**Reason:** A single topic in lecture notes often spans several pages, and
+students photograph a board more than once as a lecture goes on. The same writing
+then arrives several times — unchanged, split into blocks differently, or extended
+with more writing. Simply concatenating per-image results repeats whole sections.
 
 **Revised in phase 5 — pass 2 does not use the LLM.** The first implementation
-asked the model to propose merge operations (drop a duplicate block, join a cut
-sentence), with code verifying each one before applying it. On four real lecture
-photos, qwen2.5vl:7b proposed 10 operations and all 10 failed verification: one
-would have deleted a formula, and nine were impossible joins. The real duplicate —
-the same MST definition on two photos — could not have been expressed anyway,
-because pass 1 split one copy into five blocks and the other into two.
+asked the model to propose merge operations, with code verifying each one before
+applying it. On four real lecture photos, qwen2.5vl:7b proposed 10 operations and
+all 10 failed verification: one would have deleted a formula, and nine were
+impossible joins. The real duplicate — the same MST definition on two photos —
+could not have been expressed anyway, because pass 1 split one copy into five
+blocks and the other into two.
 
-That duplicate is findable from the words alone, so code finds it. Each later
-block is compared against runs of up to four consecutive blocks on earlier pages,
-after normalising notation so `\sum` and `∑` count as the same word. A block is
-dropped only when the kept run already contains its words (at least 80% overlap,
-at most one word missing), and a block under six words is dropped only as part of
-a repeated run, so short generic lines such as "Definition" survive. A prose block
-ending without punctuation is joined to a next-page prose block that starts in
-lower case. No text the model read can be lost: a drop requires its words to be
-kept elsewhere, and a join concatenates.
+Repeated writing is findable from the words alone, so code finds it, after
+normalising notation so `\sum` and `∑` count as the same word. Two operations,
+each verified before it is applied:
+
+- **Drop** a later block whose words a run of up to four consecutive earlier
+  blocks already covers (at least 80% overlap, at most one word missing).
+- **Supersede** an earlier block with a later run that contains all of its board
+  writing in the same order — a later photo of the same writing, more complete.
+  The later text takes the earlier block's place, so its section stays together,
+  and any note the model attached to the earlier block travels with it.
+
+A block under six words is removed only as part of a repeated run, so short generic
+lines such as "Definition" survive. No text the model read can be lost.
+
+**Joins were removed.** An earlier version joined a block ending without
+punctuation to a next-page block starting in lower case. On two photos of one board
+taken minutes apart, it glued the unfinished "d[v] should indicate the cost of"
+onto "array π" from the other panel — a sentence on neither board. Punctuation and
+case say nothing about content, and a join that invents a sentence is worse than
+none. The only real evidence that one piece of writing continues another is a later
+block containing both, which supersede already handles. Without that evidence, a
+fragment is left as it is.
 
 **Revisit if:** real use shows repeated content the word check misses, or a
 stronger model (the Claude engine) makes model-proposed merges worth measuring
@@ -207,9 +220,11 @@ Convert one real image and render Markdown. Copy button.
 Up to 25 images, progress display, per-image failure and retry.
 
 **Phase 5 — Pass 2 (merge)**
-Remove content repeated across pages (a board photographed twice), reconnect
-sentences cut across pages, and keep the page-by-page document available beside
-the merged one. Deterministic, in code, with no model call — see decision 3.
+Remove content repeated across pages (a board photographed more than once), let a
+later photo complete writing an earlier one caught unfinished, and keep the
+page-by-page document available beside the merged one. Deterministic, in code, with
+no model call, and never joining text across pages without evidence — see
+decision 3.
 
 **Phase 6 — Polish**
 Template selection, `.md` download. (Client-side resizing moved to phase 1.)
