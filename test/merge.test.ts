@@ -11,28 +11,34 @@ import {
 } from '../src/merge.ts';
 import type { Block, ExtractionResult } from '../src/schema.ts';
 import { note1, note2, note3, note4 } from './fixtures/lecture-pages.ts';
+import { note5, note6 } from './fixtures/shortest-paths-pages.ts';
 
 function page(sourceImage: string, blocks: Block[]): ExtractionResult {
   return { source_image: sourceImage, confidence: 'high', blocks };
 }
 
 const drop = (id: string, duplicateOf: string | string[]) => ({ op: 'drop_duplicate', id, duplicate_of: duplicateOf });
-const join = (first: string, second: string) => ({ op: 'join', first, second });
+const supersede = (id: string, by: string | string[]) => ({ op: 'supersede', id, by });
 
 function texts(outcome: MergeOutcome): string[] {
   return outcome.blocks.map((block) => block.text ?? '');
 }
 
 /**
- * The invariant this phase is built around: every string on every page survives,
- * unless its block was dropped as a verified duplicate — and then every block it
- * duplicated must itself still be present.
+ * The invariant pass 2 is built around: nothing the model read disappears.
+ *
+ * - a dropped block's run must itself still be present
+ * - a superseded block's board words must all appear in the output, and its
+ *   note verbatim, since the note travels to the replacement
+ * - every other string must appear verbatim
  */
 function assertNothingLost(pages: ExtractionResult[], outcome: MergeOutcome) {
   const droppedFor = new Map(outcome.drops.map((entry) => [entry.id, entry.duplicate_of]));
+  const supersededIds = new Set(outcome.supersedes.map((entry) => entry.id));
   const output = outcome.blocks
     .flatMap((block) => [block.text ?? '', ...(block.items ?? []), block.note ?? ''])
     .join('\n');
+  const outputWords = tokens(output);
 
   for (const entry of flattenPages(pages)) {
     const keepers = droppedFor.get(entry.id);
@@ -42,6 +48,16 @@ function assertNothingLost(pages: ExtractionResult[], outcome: MergeOutcome) {
       }
       continue;
     }
+
+    if (supersededIds.has(entry.id)) {
+      const board = [entry.block.text, ...(entry.block.items ?? [])].filter(Boolean).join(' ');
+      for (const word of tokens(board)) {
+        assert.ok(outputWords.has(word), `superseded ${entry.id} lost the word "${word}"`);
+      }
+      if (entry.block.note) assert.ok(output.includes(entry.block.note.trim()), `lost the note of ${entry.id}`);
+      continue;
+    }
+
     for (const value of [entry.block.text, ...(entry.block.items ?? []), entry.block.note]) {
       if (value) assert.ok(output.includes(value.trim()), `lost "${value}" from ${entry.id}`);
     }
@@ -50,7 +66,83 @@ function assertNothingLost(pages: ExtractionResult[], outcome: MergeOutcome) {
 
 const sameSentence = 'A cut is a partition of V into two non-empty sets';
 
-/* --- the real photos --- */
+/* --- bug 1: no join may invent a sentence --- */
+
+test('never joins across pages: the reported invented sentence cannot be produced', () => {
+  // The exact pair from the bug report: note5's unfinished line and the first line
+  // pass 1 read from note6, which is from the other panel of the board.
+  const pages = [
+    page('note5.jpg', [{ type: 'paragraph', text: 'd[v] should indicate the cost of' }]),
+    page('note6.jpg', [{ type: 'paragraph', text: 'array π "predecessor array" (of size n)' }]),
+  ];
+
+  const outcome = mergeDocument(pages);
+
+  assert.deepEqual(texts(outcome), ['d[v] should indicate the cost of', 'array π "predecessor array" (of size n)']);
+  assert.ok(!outcome.blocks.some((block) => block.text?.includes('cost of array')));
+});
+
+test('does not recognise a join operation at all', () => {
+  const outcome = applyMergeOperations(
+    [page('a.jpg', [{ type: 'paragraph', text: 'first half' }]), page('b.jpg', [{ type: 'paragraph', text: 'second half' }])],
+    [{ op: 'join', first: 'p1.b1', second: 'p2.b1' }],
+  );
+
+  assert.match(outcome.rejected[0]?.reason ?? '', /not a recognised operation/);
+  assert.deepEqual(texts(outcome), ['first half', 'second half']);
+});
+
+/* --- the real shortest-paths photos --- */
+
+test('merges note5 and note6: one Notation section, completed, where it first appeared', () => {
+  const pages = [note5, note6];
+
+  const outcome = mergeDocument(pages);
+
+  // note5 read the panel as one definition with four items; note6 as four
+  // paragraphs, with the last line finished. note6's four lines replace note5's
+  // block in place.
+  assert.deepEqual(outcome.supersedes, [{ id: 'p1.b2', by: ['p2.b4', 'p2.b5', 'p2.b6', 'p2.b7'] }]);
+  assert.deepEqual(outcome.drops, []);
+  assert.deepEqual(outcome.rejected, [], 'every planned operation should verify');
+
+  assert.deepEqual(texts(outcome), [
+    note5.blocks[0]!.text,
+    note6.blocks[3]!.text,
+    note6.blocks[4]!.text,
+    note6.blocks[5]!.text,
+    note6.blocks[6]!.text,
+    note6.blocks[0]!.text,
+    note6.blocks[1]!.text,
+    note6.blocks[2]!.text,
+  ]);
+
+  // The section stays under note5's page, ahead of note6's π-array material.
+  assert.deepEqual(outcome.blocks.map((block) => block.page), [0, 0, 0, 0, 0, 1, 1, 1]);
+
+  // The completed line is there once; the unfinished one and any invented join are gone.
+  const lines = outcome.blocks.flatMap((block) => [block.text ?? '', ...(block.items ?? [])]);
+  assert.equal(lines.filter((line) => line.includes('d[v] should indicate the cost of')).length, 1);
+  assert.ok(lines.some((line) => line.includes('algorithm') && line.startsWith('d[v] should indicate')));
+  assert.ok(!lines.some((line) => /Notation array|cost of array/.test(line)));
+
+  // The model's own note on note5 travels with the replacement rather than vanishing.
+  assert.equal(outcome.blocks[4]!.note, note5.blocks[1]!.note);
+
+  assertNothingLost(pages, outcome);
+});
+
+test('a later photo completes an unfinished line instead of joining it to the other panel', () => {
+  const pages = [page('note5.jpg', [{ type: 'paragraph', text: 'd[v] should indicate the cost of' }]), note6];
+
+  const outcome = mergeDocument(pages);
+
+  assert.deepEqual(outcome.supersedes, [{ id: 'p1.b1', by: ['p2.b7'] }]);
+  assert.equal(outcome.blocks[0]!.text, note6.blocks[6]!.text);
+  assertNothingLost(pages, outcome);
+});
+
+/* --- the earlier lecture photos: unchanged --- */
 
 test('merges the real lecture photos: the re-photographed MST definition appears once', () => {
   const pages = [note2, note3, note4, note1];
@@ -66,11 +158,9 @@ test('merges the real lecture photos: the re-photographed MST definition appears
     // that was actually re-photographed.
     { id: 'p2.b2', duplicate_of: ['p1.b3', 'p1.b4', 'p1.b5'] },
   ]);
-  assert.deepEqual(outcome.joins, []);
+  assert.deepEqual(outcome.supersedes, []);
   assert.deepEqual(outcome.rejected, [], 'every planned operation should verify');
 
-  // Everything else survives, in order: Prim's algorithm, the cut definitions,
-  // and the other course untouched.
   assert.deepEqual(
     texts(outcome),
     [...note2.blocks, ...note3.blocks.slice(2), ...note4.blocks, ...note1.blocks].map((block) => block.text ?? ''),
@@ -117,85 +207,144 @@ test('collapses a board photographed three times to its first appearance', () =>
   assertNothingLost(pages, outcome);
 });
 
+test('an unfinished line, its completion, and a repeat of the completion collapse to one', () => {
+  const unfinished = 'd[v] should indicate the cost of';
+  const complete = "d[v] should indicate the cost of algorithm's currently best-known s-v path";
+  const pages = [
+    page('a.jpg', [{ type: 'paragraph', text: unfinished }]),
+    page('b.jpg', [{ type: 'paragraph', text: complete }]),
+    page('c.jpg', [{ type: 'paragraph', text: complete }]),
+  ];
+
+  const outcome = mergeDocument(pages);
+
+  assert.deepEqual(texts(outcome), [complete]);
+  assert.deepEqual(outcome.rejected, []);
+  assertNothingLost(pages, outcome);
+});
+
 test('never merges a different course into the lecture', () => {
   const outcome = mergeDocument([note2, note1]);
 
   assert.deepEqual(outcome.drops, []);
-  assert.deepEqual(outcome.joins, []);
+  assert.deepEqual(outcome.supersedes, []);
   assert.equal(outcome.blocks.length, note2.blocks.length + note1.blocks.length);
 });
 
 test('is deterministic', () => {
-  const pages = [note2, note3, note4, note1];
-
-  assert.deepEqual(mergeDocument(pages), mergeDocument(pages));
+  for (const pages of [[note2, note3, note4, note1], [note5, note6]]) {
+    assert.deepEqual(mergeDocument(pages), mergeDocument(pages));
+  }
 });
 
-/* --- joins --- */
+/* --- verifying supersede --- */
 
-test('joins a sentence cut at a page boundary', () => {
+const longLine = 'all edge weights in this graph are distinct';
+
+test('refuses to supersede when the words are not in the same order', () => {
   const pages = [
-    page('a.jpg', [{ type: 'paragraph', text: 'among all edges (u, v) where u is in S and v is not in S' }]),
-    page('b.jpg', [{ type: 'paragraph', text: 'find the edge of minimum weight' }]),
+    page('a.jpg', [{ type: 'paragraph', text: 'the cost of any shortest path is defined as w' }]),
+    page('b.jpg', [{ type: 'paragraph', text: 'w is defined as the cost of any shortest path' }]),
   ];
 
-  const outcome = mergeDocument(pages);
+  const outcome = applyMergeOperations(pages, [supersede('p1.b1', 'p2.b1')]);
 
-  assert.deepEqual(outcome.joins, [{ first: 'p1.b1', second: 'p2.b1' }]);
-  assert.deepEqual(texts(outcome), [
-    'among all edges (u, v) where u is in S and v is not in S find the edge of minimum weight',
-  ]);
-  assertNothingLost(pages, outcome);
+  assert.equal(outcome.supersedes.length, 0);
+  assert.match(outcome.rejected[0]?.reason ?? '', /same order/);
 });
 
-test('does not join when the first page ends a sentence', () => {
+test('does not plan to supersede a short line, though containment alone would allow it', () => {
   const pages = [
-    page('a.jpg', [{ type: 'paragraph', text: 'all edge weights are distinct.' }]),
-    page('b.jpg', [{ type: 'paragraph', text: 'find the edge of minimum weight' }]),
+    page('a.jpg', [{ type: 'paragraph', text: 'array d of size n' }]),
+    page('b.jpg', [{ type: 'paragraph', text: 'array d of size n holds the distances' }]),
   ];
 
-  assert.deepEqual(mergeDocument(pages).joins, []);
+  assert.equal(applyMergeOperations(pages, [supersede('p1.b1', 'p2.b1')]).supersedes.length, 1);
+  assert.deepEqual(planMergeOperations(pages), []);
 });
 
-test('does not join when the next page starts in upper case', () => {
+test('refuses to supersede a block that already has a verified later copy', () => {
   const pages = [
-    page('a.jpg', [{ type: 'paragraph', text: 'e is not a crossing edge' }]),
-    page('b.jpg', [{ type: 'paragraph', text: 'Friday, Sept 11 through Teams' }]),
-  ];
-
-  assert.deepEqual(mergeDocument(pages).joins, []);
-});
-
-test('does not join anything that is not prose', () => {
-  const pages = [
-    page('a.jpg', [{ type: 'formula', text: 'A = \\emptyset' }]),
-    page('b.jpg', [{ type: 'paragraph', text: 'while the tree is incomplete' }]),
-  ];
-
-  assert.deepEqual(mergeDocument(pages).joins, []);
-});
-
-test('joins across a boundary once the repeated top of the next page is dropped', () => {
-  const pages = [
-    page('a.jpg', [
-      { type: 'heading', text: "Prim's Algorithm" },
-      { type: 'paragraph', text: 'among all edges where u is in S' },
-    ]),
+    page('a.jpg', [{ type: 'paragraph', text: longLine }]),
     page('b.jpg', [
-      { type: 'heading', text: "Prim's Algorithm" },
-      { type: 'paragraph', text: 'among all edges where u is in S' },
-      { type: 'paragraph', text: 'find the edge of min weight' },
+      { type: 'paragraph', text: longLine },
+      { type: 'paragraph', text: `${longLine} and every tree is unique` },
     ]),
   ];
 
-  const outcome = mergeDocument(pages);
+  const outcome = applyMergeOperations(pages, [drop('p2.b1', 'p1.b1'), supersede('p1.b1', 'p2.b2')]);
 
-  assert.equal(outcome.drops.length, 2);
-  assert.deepEqual(texts(outcome), ["Prim's Algorithm", 'among all edges where u is in S find the edge of min weight']);
-  assertNothingLost(pages, outcome);
+  assert.equal(outcome.supersedes.length, 0);
+  assert.match(outcome.rejected[0]?.reason ?? '', /later copy/);
 });
 
-/* --- verification of individual operations --- */
+test('refuses a supersede from the same page, from earlier, or across a non-consecutive run', () => {
+  const samePage = applyMergeOperations(
+    [page('a.jpg', [{ type: 'paragraph', text: longLine }, { type: 'paragraph', text: `${longLine} too` }])],
+    [supersede('p1.b1', 'p1.b2')],
+  );
+  assert.match(samePage.rejected[0]?.reason ?? '', /same page/);
+
+  const backwards = applyMergeOperations(
+    [page('a.jpg', [{ type: 'paragraph', text: `${longLine} too` }]), page('b.jpg', [{ type: 'paragraph', text: longLine }])],
+    [supersede('p2.b1', 'p1.b1')],
+  );
+  assert.match(backwards.rejected[0]?.reason ?? '', /after it/);
+
+  const gap = applyMergeOperations(
+    [
+      page('a.jpg', [{ type: 'paragraph', text: longLine }]),
+      page('b.jpg', [
+        { type: 'paragraph', text: 'all edge weights in this' },
+        { type: 'paragraph', text: 'something else entirely' },
+        { type: 'paragraph', text: 'graph are distinct' },
+      ]),
+    ],
+    [supersede('p1.b1', ['p2.b1', 'p2.b3'])],
+  );
+  assert.match(gap.rejected[0]?.reason ?? '', /consecutive/);
+});
+
+test('refuses chains and shared replacements', () => {
+  const chain = applyMergeOperations(
+    [
+      page('a.jpg', [{ type: 'paragraph', text: longLine }]),
+      page('b.jpg', [{ type: 'paragraph', text: `${longLine} here` }]),
+      page('c.jpg', [{ type: 'paragraph', text: `${longLine} here and now` }]),
+    ],
+    [supersede('p1.b1', 'p2.b1'), supersede('p2.b1', 'p3.b1')],
+  );
+  assert.equal(chain.supersedes.length, 1);
+  assert.match(chain.rejected[0]?.reason ?? '', /already been replaced/);
+
+  const shared = applyMergeOperations(
+    [
+      page('a.jpg', [{ type: 'paragraph', text: longLine }]),
+      page('b.jpg', [{ type: 'paragraph', text: longLine }]),
+      page('c.jpg', [{ type: 'paragraph', text: `${longLine} for sure` }]),
+    ],
+    [supersede('p1.b1', 'p3.b1'), supersede('p2.b1', 'p3.b1')],
+  );
+  assert.equal(shared.supersedes.length, 1);
+  assert.match(shared.rejected[0]?.reason ?? '', /only one earlier block/);
+});
+
+test('never supersedes a table or an unreadable block', () => {
+  const pages = [
+    page('a.jpg', [note1.blocks[1]!, { type: 'unreadable', note: 'the bottom corner is cut off in this photo' }]),
+    page('b.jpg', [
+      { ...note1.blocks[1]!, items: ['batch processing', 'time sharing', 'multiprogramming'] },
+      { type: 'unreadable', note: 'the bottom corner is cut off in this photo again' },
+    ]),
+  ];
+
+  const outcome = applyMergeOperations(pages, [supersede('p1.b1', 'p2.b1'), supersede('p1.b2', 'p2.b2')]);
+
+  assert.equal(outcome.supersedes.length, 0);
+  assert.deepEqual(planMergeOperations(pages), []);
+});
+
+/* --- verifying drops --- */
 
 test('drops a block covered by a run of earlier blocks, where no single block would do', () => {
   const pages = [note2, note3];
@@ -209,13 +358,6 @@ test('drops a block covered by a run of earlier blocks, where no single block wo
   assertNothingLost(pages, outcome);
 });
 
-test('keeps a block wrongly named as a duplicate', () => {
-  const outcome = applyMergeOperations([note2, note3], [drop('p2.b3', 'p1.b1')]);
-
-  assert.equal(outcome.drops.length, 0);
-  assert.match(outcome.rejected[0]?.reason ?? '', /similar/);
-});
-
 test('refuses a drop that would lose more than a stray word', () => {
   const kept = 'all edge weights in the graph are distinct so the minimum spanning tree is unique for every connected input we consider here';
   const pages = (extra: string) => [
@@ -223,10 +365,8 @@ test('refuses a drop that would lose more than a stray word', () => {
     page('b.jpg', [{ type: 'paragraph', text: `${kept} ${extra}` }]),
   ];
 
-  // One extra word is a misreading and may go...
   assert.equal(applyMergeOperations(pages('always'), [drop('p2.b1', 'p1.b1')]).drops.length, 1);
 
-  // ...but two extra words is content the kept block does not have.
   const twoWords = applyMergeOperations(pages('except loops'), [drop('p2.b1', 'p1.b1')]);
   assert.equal(twoWords.drops.length, 0);
   assert.match(twoWords.rejected[0]?.reason ?? '', /would be lost/);
@@ -241,56 +381,21 @@ test('refuses to drop a block as a duplicate of another on the same page', () =>
   assert.match(outcome.rejected[0]?.reason ?? '', /same page/);
 });
 
-test('refuses a drop pointing at a later block', () => {
+test('refuses a drop pointing at a later block, or at an unknown one', () => {
   const pages = [page('a.jpg', [{ type: 'paragraph', text: sameSentence }]), page('b.jpg', [{ type: 'paragraph', text: sameSentence }])];
 
-  const outcome = applyMergeOperations(pages, [drop('p1.b1', 'p2.b1')]);
-
-  assert.equal(outcome.blocks.length, 2);
-  assert.match(outcome.rejected[0]?.reason ?? '', /before/);
+  assert.match(applyMergeOperations(pages, [drop('p1.b1', 'p2.b1')]).rejected[0]?.reason ?? '', /before/);
+  assert.match(applyMergeOperations(pages, [drop('p9.b9', 'p1.b1')]).rejected[0]?.reason ?? '', /unknown/);
 });
 
-test('refuses a run that is not consecutive, or spans pages', () => {
-  const three = page('a.jpg', [
-    { type: 'paragraph', text: 'A cut is a partition' },
-    { type: 'paragraph', text: 'something unrelated in between' },
-    { type: 'paragraph', text: 'of V into two non-empty sets' },
-  ]);
-  const later = page('b.jpg', [{ type: 'paragraph', text: sameSentence }]);
-
-  const gap = applyMergeOperations([three, later], [drop('p2.b1', ['p1.b1', 'p1.b3'])]);
-  assert.match(gap.rejected[0]?.reason ?? '', /consecutive/);
-
-  const pages = ['a.jpg', 'b.jpg', 'c.jpg'].map((name) => page(name, [{ type: 'paragraph', text: sameSentence }]));
-  const spanning = applyMergeOperations(pages, [drop('p3.b1', ['p1.b1', 'p2.b1'])]);
-  assert.match(spanning.rejected[0]?.reason ?? '', /consecutive/);
-});
-
-test('refuses a drop naming a block that does not exist', () => {
-  const outcome = applyMergeOperations([note2], [drop('p9.b9', 'p1.b1')]);
-
-  assert.equal(outcome.blocks.length, note2.blocks.length);
-  assert.match(outcome.rejected[0]?.reason ?? '', /unknown/);
-});
-
-test('refuses a drop whose duplicate was itself dropped', () => {
+test('refuses dependent drops: a dropped keeper, or dropping a keeper', () => {
   const pages = ['a.jpg', 'b.jpg', 'c.jpg'].map((name) => page(name, [{ type: 'paragraph', text: sameSentence }]));
 
-  const outcome = applyMergeOperations(pages, [drop('p2.b1', 'p1.b1'), drop('p3.b1', 'p2.b1')]);
+  const keeperDropped = applyMergeOperations(pages, [drop('p2.b1', 'p1.b1'), drop('p3.b1', 'p2.b1')]);
+  assert.match(keeperDropped.rejected[0]?.reason ?? '', /itself dropped/);
 
-  assert.equal(outcome.drops.length, 1);
-  assert.match(outcome.rejected[0]?.reason ?? '', /itself dropped/);
-  assertNothingLost(pages, outcome);
-});
-
-test('refuses to drop a block another drop depends on', () => {
-  const pages = ['a.jpg', 'b.jpg', 'c.jpg'].map((name) => page(name, [{ type: 'paragraph', text: sameSentence }]));
-
-  const outcome = applyMergeOperations(pages, [drop('p3.b1', 'p2.b1'), drop('p2.b1', 'p1.b1')]);
-
-  assert.equal(outcome.drops.length, 1);
-  assert.match(outcome.rejected[0]?.reason ?? '', /depends/);
-  assertNothingLost(pages, outcome);
+  const keeperNeeded = applyMergeOperations(pages, [drop('p3.b1', 'p2.b1'), drop('p2.b1', 'p1.b1')]);
+  assert.match(keeperNeeded.rejected[0]?.reason ?? '', /depends/);
 });
 
 test('refuses a duplicate across incompatible block types', () => {
@@ -302,42 +407,7 @@ test('refuses a duplicate across incompatible block types', () => {
   assert.match(outcome.rejected[0]?.reason ?? '', /cannot duplicate/);
 });
 
-test('never drops a table or an unreadable block', () => {
-  const pages = [
-    page('a.jpg', [note1.blocks[1]!, { type: 'unreadable', note: 'bottom corner cut off' }]),
-    page('b.jpg', [note1.blocks[1]!, { type: 'unreadable', note: 'bottom corner cut off' }]),
-  ];
-
-  const outcome = applyMergeOperations(pages, [drop('p2.b1', 'p1.b1'), drop('p2.b2', 'p1.b2')]);
-
-  assert.equal(outcome.drops.length, 0);
-  assert.deepEqual(planMergeOperations(pages), []);
-});
-
-test('verifies joins: same page, non-adjacent, and non-prose are refused', () => {
-  const samePage = applyMergeOperations(
-    [page('a.jpg', [{ type: 'paragraph', text: 'first half' }, { type: 'paragraph', text: 'second half' }])],
-    [join('p1.b1', 'p1.b2')],
-  );
-  assert.match(samePage.rejected[0]?.reason ?? '', /across pages/);
-
-  const apart = applyMergeOperations(
-    [
-      page('a.jpg', [{ type: 'paragraph', text: 'sentence one' }, { type: 'paragraph', text: 'sentence two' }]),
-      page('b.jpg', [{ type: 'paragraph', text: 'sentence three' }]),
-    ],
-    [join('p1.b1', 'p2.b1')],
-  );
-  assert.match(apart.rejected[0]?.reason ?? '', /next to each other/);
-
-  const formula = applyMergeOperations(
-    [page('a.jpg', [{ type: 'formula', text: 'A = \\emptyset' }]), page('b.jpg', [{ type: 'paragraph', text: 'while' }])],
-    [join('p1.b1', 'p2.b1')],
-  );
-  assert.match(formula.rejected[0]?.reason ?? '', /prose/);
-});
-
-test('rejects operations that are not drop or join', () => {
+test('rejects operations that are not drop or supersede', () => {
   const outcome = applyMergeOperations([note2], [
     { op: 'rewrite', id: 'p1.b1', text: 'something the board never said' },
     { op: 'drop_duplicate', id: 'p1.b2' },

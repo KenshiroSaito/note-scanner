@@ -499,9 +499,9 @@ async function mergeIfPossible() {
 
     // Never an invisible merge: say what it changed.
     const changed =
-      outcome.dropped === 0 && outcome.joined === 0
+      outcome.dropped === 0 && outcome.superseded === 0
         ? 'nothing was repeated across them'
-        : `removed ${plural(outcome.dropped, 'duplicate block')}, joined ${plural(outcome.joined, 'sentence')}`;
+        : `removed ${plural(outcome.dropped, 'duplicate block')}, completed ${plural(outcome.superseded, 'line')} from a later photo`;
     setStatus(`Merged ${plural(pages.length, 'page')} — ${changed}.${failedNote}`, failed.length > 0 ? 'error' : 'done');
   }
 

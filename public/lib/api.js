@@ -133,7 +133,7 @@ export async function extractImage(file, { signal } = {}) {
  * @param {Array<object>} pages pass-1 results, in page order
  * @param {{ signal?: AbortSignal }} [options]
  * @returns {Promise<
- *   | { ok: true, merged: true, blocks: Array<object>, dropped: number, joined: number, rejected: number }
+ *   | { ok: true, merged: true, blocks: Array<object>, dropped: number, superseded: number, rejected: number }
  *   | { ok: true, merged: false, reason: string }
  *   | { ok: false, cancelled?: true, message: string }
  * >}
@@ -159,7 +159,7 @@ export async function mergePages(pages, { signal } = {}) {
       merged: true,
       blocks: body.blocks,
       dropped: Number(body.dropped) || 0,
-      joined: Number(body.joined) || 0,
+      superseded: Number(body.superseded) || 0,
       rejected: Number(body.rejected) || 0,
     };
   }

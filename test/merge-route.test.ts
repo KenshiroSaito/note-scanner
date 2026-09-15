@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 
 import { MAX_MERGE_PAGES, createMergeRoutes } from '../src/merge-route.ts';
 import { note1, note2, note3, note4 } from './fixtures/lecture-pages.ts';
+import { note5, note6 } from './fixtures/shortest-paths-pages.ts';
 
 /*
  * Hono's app.request() drives the route in-process. Pass 2 involves no engine,
@@ -14,8 +15,9 @@ type Body = {
   merged?: boolean;
   reason?: string;
   error?: string;
-  blocks?: Array<{ text?: string; page: number }>;
+  blocks?: Array<{ text?: string; note?: string; page: number }>;
   dropped?: number;
+  superseded?: number;
   joined?: number;
   rejected?: number;
 };
@@ -35,15 +37,30 @@ test('merges the real lecture pages and reports what it removed', async () => {
   assert.equal(response.status, 200);
   assert.equal(body.merged, true);
   assert.equal(body.dropped, 2);
-  assert.equal(body.joined, 0);
+  assert.equal(body.superseded, 0);
   assert.equal(body.rejected, 0);
 
   // The MST definition's opening sentence now appears once, not twice.
   const openings = body.blocks?.filter((block) => block.text?.startsWith('weight of a tree')) ?? [];
   assert.equal(openings.length, 1);
 
-  // Blocks carry their source page, so the browser can place failure markers.
+  // Blocks carry their page, so the browser can place failure markers.
   assert.equal(body.blocks?.find((block) => block.text === "Prim's Algorithm")?.page, 1);
+});
+
+test('completes the Notation section from the later photo and invents nothing', async () => {
+  const response = await app().request('/merge', post({ pages: [note5, note6] }));
+  const body = (await response.json()) as Body;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.superseded, 1);
+  assert.equal(body.dropped, 0);
+  assert.equal(body.rejected, 0);
+  assert.equal('joined' in body, false, 'joins no longer exist');
+
+  const texts = body.blocks?.map((block) => block.text ?? '') ?? [];
+  assert.equal(texts.filter((text) => text.includes('d[v] should indicate the cost of')).length, 1);
+  assert.ok(!texts.some((text) => /Notation array|cost of array/.test(text)));
 });
 
 test('still answers merged: true when nothing repeats', async () => {
@@ -52,6 +69,7 @@ test('still answers merged: true when nothing repeats', async () => {
 
   assert.equal(body.merged, true);
   assert.equal(body.dropped, 0);
+  assert.equal(body.superseded, 0);
   assert.equal(body.blocks?.length, note2.blocks.length + note1.blocks.length);
 });
 

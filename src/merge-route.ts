@@ -49,7 +49,7 @@ export function createMergeRoutes() {
     const outcome = mergeDocument(pages);
 
     console.log(
-      `merge: ${pages.length} pages, ${outcome.drops.length} dropped, ${outcome.joins.length} joined`,
+      `merge: ${pages.length} pages, ${outcome.drops.length} dropped, ${outcome.supersedes.length} superseded`,
     );
     // Every operation comes from the planner and should verify. A rejection means
     // the planner and the verifier disagree, which is a bug worth seeing.
@@ -62,7 +62,7 @@ export function createMergeRoutes() {
         merged: true,
         blocks: outcome.blocks,
         dropped: outcome.drops.length,
-        joined: outcome.joins.length,
+        superseded: outcome.supersedes.length,
         rejected: outcome.rejected.length,
       },
       200,

@@ -41,11 +41,11 @@ test('posts the pages as JSON to /merge', async (t) => {
 
 test('returns the merged document with what was done', async (t) => {
   const blocks = [{ type: 'heading', text: 'Cuts', page: 0 }];
-  stubFetch(t, () => Response.json({ merged: true, blocks, dropped: 1, joined: 0, rejected: 2 }));
+  stubFetch(t, () => Response.json({ merged: true, blocks, dropped: 1, superseded: 1, rejected: 0 }));
 
   const outcome = await mergePages(pages);
 
-  assert.deepEqual(outcome, { ok: true, merged: true, blocks, dropped: 1, joined: 0, rejected: 2 });
+  assert.deepEqual(outcome, { ok: true, merged: true, blocks, dropped: 1, superseded: 1, rejected: 0 });
 });
 
 test('treats a declined merge as a normal outcome with its reason', async (t) => {
