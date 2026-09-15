@@ -11,7 +11,7 @@
  */
 import { MAX_IMAGES, dedupe, identityOf, validateSelection } from './lib/validation.js';
 import { normalizeImage } from './lib/normalize.js';
-import { extractImage, fetchRuntimeConfig, mergePages } from './lib/api.js';
+import { extractImage, fetchRuntimeConfig, mergePages, warmUpModel } from './lib/api.js';
 import { runWithConcurrency } from './lib/queue.js';
 import {
   DEFAULT_FORMULA_FLAVOUR,
@@ -166,6 +166,15 @@ async function addFiles(fileList) {
   });
 
   lastRejected = rejected;
+
+  // Adding photos means a conversion is coming, so start loading the model now
+  // rather than making the first image wait for it. Fire-and-forget: a failure
+  // here is reported by Convert, not by the drop.
+  if (accepted.length > 0) {
+    warmUpModel().then((outcome) => {
+      if (outcome.warmed) console.log(`warm-up: model ready in ${outcome.seconds}s`);
+    });
+  }
 
   // Show every accepted file immediately as a pending tile, so a slow decode
   // looks like work in progress rather than a dropped file.

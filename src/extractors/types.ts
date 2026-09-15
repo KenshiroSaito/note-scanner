@@ -31,6 +31,13 @@ export type GenerateRequest = {
  */
 export type Generate = (request: GenerateRequest) => Promise<unknown>;
 
+/**
+ * Prepare the engine before the first image arrives.
+ *
+ * `warmed: false` means the engine has nothing to prepare, which is not an error.
+ */
+export type Warmup = () => Promise<{ warmed: boolean }>;
+
 /** Raised when the engine itself failed, as opposed to returning bad output. */
 export class ExtractorError extends Error {
   readonly kind: 'unreachable' | 'timeout' | 'refused' | 'upstream';

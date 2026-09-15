@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { API_BASE, DEFAULT_MAX_CONCURRENCY, extractImage, fetchRuntimeConfig } from '../public/lib/api.js';
+import {
+  API_BASE,
+  DEFAULT_MAX_CONCURRENCY,
+  WARMUP_INTERVAL_MS,
+  extractImage,
+  fetchRuntimeConfig,
+  warmUpModel,
+} from '../public/lib/api.js';
 
 /*
  * `fetch`, `FormData`, and `File` are all globals in Node, so the client gets
@@ -216,4 +223,74 @@ test('ignores a nonsense concurrency value from the backend', async (t) => {
   const config = await fetchRuntimeConfig({ refresh: true });
 
   assert.equal(config.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
+});
+
+/* --- warm-up --- */
+
+/*
+ * The throttle is module state, so each test uses its own point in time, far
+ * enough from the others' that no earlier test can throttle a later one.
+ */
+
+test('posts one warm-up and reports the load time', async (t) => {
+  const stub = stubFetch(() => jsonResponse({ warmed: true, seconds: 8.4 }));
+  t.after(stub.restore);
+
+  const outcome = await warmUpModel({ now: 1e12 });
+
+  assert.deepEqual(outcome, { ok: true, warmed: true, seconds: 8.4 });
+  assert.equal(stub.calls[0].url, `${API_BASE}/warmup`);
+  assert.equal(stub.calls[0].init.method, 'POST');
+});
+
+test('sends no second warm-up inside the interval, and one after it', async (t) => {
+  const stub = stubFetch(() => jsonResponse({ warmed: true, seconds: 0.1 }));
+  t.after(stub.restore);
+
+  await warmUpModel({ now: 2e12 });
+  const throttled = await warmUpModel({ now: 2e12 + WARMUP_INTERVAL_MS - 1 });
+  await warmUpModel({ now: 2e12 + WARMUP_INTERVAL_MS });
+
+  assert.deepEqual(throttled, { ok: true, skipped: true });
+  assert.equal(stub.calls.length, 2);
+});
+
+test('does not overlap a warm-up that is still in flight', async (t) => {
+  let release;
+  const stub = stubFetch(() => new Promise((resolve) => {
+    release = () => resolve(jsonResponse({ warmed: true, seconds: 20 }));
+  }));
+  t.after(stub.restore);
+
+  const first = warmUpModel({ now: 3e12 });
+  // Well past the interval, but the first request has not answered yet.
+  const second = await warmUpModel({ now: 4e12 });
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+
+  assert.deepEqual(second, { ok: true, skipped: true });
+  assert.equal((await first).warmed, true);
+  assert.equal(stub.calls.length, 1);
+});
+
+test('never throws when the backend is down, and tries again next time', async (t) => {
+  const stub = stubFetch(() => {
+    throw new TypeError('fetch failed');
+  });
+  t.after(stub.restore);
+
+  const outcome = await warmUpModel({ now: 5e12 });
+  await warmUpModel({ now: 5e12 + 1 });
+
+  assert.equal(outcome.ok, false);
+  assert.equal(stub.calls.length, 2, 'a failed attempt should not throttle the next one');
+});
+
+test('reports an engine error without throwing', async (t) => {
+  const stub = stubFetch(() => jsonResponse({ error: 'Could not reach Ollama at http://localhost:11434' }, 502));
+  t.after(stub.restore);
+
+  const outcome = await warmUpModel({ now: 6e12 });
+
+  assert.deepEqual(outcome, { ok: false, message: 'Could not reach Ollama at http://localhost:11434' });
 });

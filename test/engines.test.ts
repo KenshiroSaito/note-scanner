@@ -2,8 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { loadConfig } from '../src/config.ts';
-import { createClaudeExtractor, createClaudeGenerate } from '../src/extractors/claude.ts';
-import { createOllamaExtractor, createOllamaGenerate } from '../src/extractors/ollama.ts';
+import { createClaudeExtractor, createClaudeGenerate, createClaudeWarmup } from '../src/extractors/claude.ts';
+import {
+  OLLAMA_OPTIONS,
+  createOllamaExtractor,
+  createOllamaGenerate,
+  createOllamaWarmup,
+} from '../src/extractors/ollama.ts';
 import { ExtractorError } from '../src/extractors/types.ts';
 import { EXTRACTION_PROMPT } from '../src/prompt.ts';
 
@@ -75,6 +80,35 @@ test('ollama text-only generation sends no images and no schema unless asked', a
   assert.equal('format' in body, false);
 });
 
+test('ollama warm-up loads the model with the same options extraction uses', async (t) => {
+  const calls = stubFetch(t, () => Response.json({ response: '{}', done: true }));
+  const config = loadConfig({});
+
+  const outcome = await createOllamaWarmup(config)();
+  await createOllamaExtractor(config)(image);
+
+  assert.deepEqual(outcome, { warmed: true });
+  const warmup = JSON.parse(String(calls[0]?.init.body));
+  const extraction = JSON.parse(String(calls[1]?.init.body));
+
+  // An empty prompt is Ollama's "load only".
+  assert.equal(warmup.prompt, '');
+  assert.equal(warmup.model, 'qwen2.5vl:7b');
+  assert.equal('images' in warmup, false);
+  // A different context size would make the first extraction reload the model,
+  // throwing the warm-up away.
+  assert.deepEqual(warmup.options, extraction.options);
+  assert.deepEqual(warmup.options, OLLAMA_OPTIONS);
+});
+
+test('ollama warm-up maps a network failure to unreachable', async (t) => {
+  stubFetch(t, () => {
+    throw new TypeError('fetch failed');
+  });
+
+  await assert.rejects(createOllamaWarmup(loadConfig({}))(), isEngineError('unreachable'));
+});
+
 test('ollama maps a failed response to an upstream error', async (t) => {
   stubFetch(t, () => new Response('model not found', { status: 404 }));
 
@@ -126,6 +160,13 @@ test('claude text-only generation sends only the prompt', async (t) => {
 
   const content = sentBody(calls).messages[0].content;
   assert.deepEqual(content, [{ type: 'text', text: 'merge these pages' }]);
+});
+
+test('claude warm-up has nothing to load and sends no request', async (t) => {
+  const calls = stubFetch(t, () => claudeReply('{}'));
+
+  assert.deepEqual(await createClaudeWarmup()(), { warmed: false });
+  assert.equal(calls.length, 0);
 });
 
 test('claude surfaces a refusal as refused rather than reading the content', async (t) => {

@@ -14,6 +14,7 @@ import {
   type Extractor,
   type Generate,
   type GenerateRequest,
+  type Warmup,
 } from './types.ts';
 
 /**
@@ -35,42 +36,56 @@ const NUM_CTX = 16_384;
  */
 const NUM_PREDICT = 4_096;
 
+/**
+ * Runner options, sent identically by extraction and warm-up.
+ *
+ * Ollama loads a model with the options of the request that loads it, and
+ * reloads it when a later request asks for a different context size. A warm-up
+ * sent with the default context would be thrown away by the first extraction,
+ * so both use this one object. temperature 0: transcription should not be
+ * creative.
+ */
+export const OLLAMA_OPTIONS = { temperature: 0, num_ctx: NUM_CTX, num_predict: NUM_PREDICT };
+
+/** POST to /api/generate, mapping every transport failure to an ExtractorError. */
+async function postGenerate(config: Config, body: Record<string, unknown>): Promise<Response> {
+  let response: Response;
+
+  try {
+    response = await fetch(new URL('/api/generate', config.OLLAMA_URL), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: config.OLLAMA_MODEL, stream: false, options: OLLAMA_OPTIONS, ...body }),
+      signal: AbortSignal.timeout(config.REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      throw new ExtractorError('timeout', `Ollama did not respond within ${config.REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw new ExtractorError('unreachable', `Could not reach Ollama at ${config.OLLAMA_URL}`);
+  }
+
+  if (!response.ok) {
+    // Logged for the operator, never forwarded to the client. Ollama is local
+    // and no credential is involved, so the body is safe to put in a log —
+    // and without it a misconfiguration is undebuggable.
+    const detail = await response.text().catch(() => '');
+    console.error(`Ollama returned ${response.status}: ${detail.slice(0, 500)}`);
+    throw new ExtractorError('upstream', `Ollama returned ${response.status}`);
+  }
+
+  return response;
+}
+
 export function createOllamaGenerate(config: Config): Generate {
   return async function generateWithOllama({ prompt, images, jsonSchema }: GenerateRequest): Promise<unknown> {
-    let response: Response;
-
-    try {
-      response = await fetch(new URL('/api/generate', config.OLLAMA_URL), {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          model: config.OLLAMA_MODEL,
-          prompt,
-          ...(images?.length ? { images: images.map((image) => toBase64(image.bytes)) } : {}),
-          // Constrained decoding against the caller's schema, which is a far
-          // stronger guarantee than asking for JSON in the prompt.
-          ...(jsonSchema ? { format: jsonSchema } : {}),
-          stream: false,
-          // temperature 0: transcription should not be creative.
-          options: { temperature: 0, num_ctx: NUM_CTX, num_predict: NUM_PREDICT },
-        }),
-        signal: AbortSignal.timeout(config.REQUEST_TIMEOUT_MS),
-      });
-    } catch (error) {
-      if (error instanceof Error && error.name === 'TimeoutError') {
-        throw new ExtractorError('timeout', `Ollama did not respond within ${config.REQUEST_TIMEOUT_MS}ms`);
-      }
-      throw new ExtractorError('unreachable', `Could not reach Ollama at ${config.OLLAMA_URL}`);
-    }
-
-    if (!response.ok) {
-      // Logged for the operator, never forwarded to the client. Ollama is local
-      // and no credential is involved, so the body is safe to put in a log —
-      // and without it a misconfiguration is undebuggable.
-      const detail = await response.text().catch(() => '');
-      console.error(`Ollama returned ${response.status}: ${detail.slice(0, 500)}`);
-      throw new ExtractorError('upstream', `Ollama returned ${response.status}`);
-    }
+    const response = await postGenerate(config, {
+      prompt,
+      ...(images?.length ? { images: images.map((image) => toBase64(image.bytes)) } : {}),
+      // Constrained decoding against the caller's schema, which is a far
+      // stronger guarantee than asking for JSON in the prompt.
+      ...(jsonSchema ? { format: jsonSchema } : {}),
+    });
 
     const payload = (await response.json()) as { response?: unknown };
     if (typeof payload.response !== 'string') {
@@ -78,6 +93,20 @@ export function createOllamaGenerate(config: Config): Generate {
     }
 
     return parseJsonLoosely(payload.response);
+  };
+}
+
+/**
+ * Load the model into memory without generating anything.
+ *
+ * Ollama treats an empty prompt as "load only". The first request of a session
+ * otherwise pays the load of a ~6 GB model, which the user sees as a first image
+ * that is inexplicably slower than the rest.
+ */
+export function createOllamaWarmup(config: Config): Warmup {
+  return async () => {
+    await postGenerate(config, { prompt: '' });
+    return { warmed: true };
   };
 }
 

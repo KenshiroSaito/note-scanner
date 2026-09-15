@@ -3,9 +3,9 @@
  * (spec section 4, decision 5).
  */
 import type { Config } from '../config.ts';
-import { createClaudeExtractor } from './claude.ts';
-import { createOllamaExtractor } from './ollama.ts';
-import type { Extractor } from './types.ts';
+import { createClaudeExtractor, createClaudeWarmup } from './claude.ts';
+import { createOllamaExtractor, createOllamaWarmup } from './ollama.ts';
+import type { Extractor, Warmup } from './types.ts';
 
 export function createExtractor(config: Config): Extractor {
   switch (config.EXTRACTOR) {
@@ -16,5 +16,14 @@ export function createExtractor(config: Config): Extractor {
   }
 }
 
+export function createWarmup(config: Config): Warmup {
+  switch (config.EXTRACTOR) {
+    case 'ollama':
+      return createOllamaWarmup(config);
+    case 'claude':
+      return createClaudeWarmup();
+  }
+}
+
 export { ExtractorError } from './types.ts';
-export type { Extractor, SourceImage } from './types.ts';
+export type { Extractor, SourceImage, Warmup } from './types.ts';
