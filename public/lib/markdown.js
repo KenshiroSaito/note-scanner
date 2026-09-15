@@ -273,8 +273,8 @@ export function resultToMarkdown(result, flavour = DEFAULT_FORMULA_FLAVOUR) {
  * Takes an array from the start: this phase passes one result and phase 4 passes
  * several, with no interface change and no per-image copy buttons.
  *
- * Concatenates only. Merging duplicate headings and reconnecting sentences
- * across images is phase 5 (spec section 4, decision 3).
+ * Concatenates only — this is the Pages view. The merged document produced by
+ * pass 2 renders through `mergedToMarkdown`.
  *
  * @param {Array<object>} results
  * @param {string} [flavour]
@@ -289,4 +289,41 @@ export function resultsToMarkdown(results, flavour = DEFAULT_FORMULA_FLAVOUR) {
   // Exactly one trailing newline: a file should end with one, and more read as
   // broken output when pasted.
   return `${sections.join(SECTION_SEPARATOR)}\n`;
+}
+
+/**
+ * Render the merged document from pass 2 — the Merged view.
+ *
+ * One continuous document with no separators, since page boundaries are what
+ * the merge removed. Pages that failed in pass 1 never reached the merge, but
+ * their markers still appear exactly where those pages belong: a failure is
+ * placed after the last block of the successful page before it. That holds
+ * even when the page after it was merged away entirely.
+ *
+ * @param {Array<object & { page: number }>} blocks merged blocks, each tagged
+ *   with the index of its page among the pages that were merged
+ * @param {Array<{ afterPage: number, source_image: string, error: string }>} [failures]
+ *   `afterPage` is the index of the merged page it follows, or -1 to lead
+ * @param {string} [flavour]
+ */
+export function mergedToMarkdown(blocks, failures = [], flavour = DEFAULT_FORMULA_FLAVOUR) {
+  // Stable sort, so failures between the same two pages keep their order.
+  const pending = [...failures].sort((a, b) => a.afterPage - b.afterPage);
+  const parts = [];
+
+  const placeFailuresBefore = (page) => {
+    while (pending.length > 0 && pending[0].afterPage < page) {
+      parts.push(resultToMarkdown(pending.shift(), flavour));
+    }
+  };
+
+  for (const block of blocks ?? []) {
+    placeFailuresBefore(block.page);
+    const markdown = blockToMarkdown(block, flavour).trim();
+    if (markdown) parts.push(markdown);
+  }
+  placeFailuresBefore(Infinity);
+
+  const document = parts.filter(Boolean).join('\n\n');
+  return document ? `${document}\n` : '';
 }

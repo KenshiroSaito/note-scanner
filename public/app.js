@@ -1,18 +1,24 @@
 /**
- * Image selection, normalization, extraction, and Markdown output.
+ * Image selection, normalization, extraction, merging, and Markdown output.
  *
  * The drop zone is a normalization boundary — every accepted file is decoded,
  * oriented, resized, and re-encoded as JPEG before it enters the selection, so
  * what is previewed is exactly what gets uploaded.
  *
- * Convert sends one image to the backend and renders the result as Markdown.
- * Converting every selected image, with progress and per-image retry, is phase 4.
+ * Convert extracts every selected image with a few in flight at once (pass 1),
+ * then merges the successful pages into one document (pass 2). The Pages view
+ * keeps the unmerged version one click away.
  */
 import { MAX_IMAGES, dedupe, identityOf, validateSelection } from './lib/validation.js';
 import { normalizeImage } from './lib/normalize.js';
-import { extractImage, fetchRuntimeConfig } from './lib/api.js';
+import { extractImage, fetchRuntimeConfig, mergePages } from './lib/api.js';
 import { runWithConcurrency } from './lib/queue.js';
-import { DEFAULT_FORMULA_FLAVOUR, FORMULA_FLAVOURS, resultsToMarkdown } from './lib/markdown.js';
+import {
+  DEFAULT_FORMULA_FLAVOUR,
+  FORMULA_FLAVOURS,
+  mergedToMarkdown,
+  resultsToMarkdown,
+} from './lib/markdown.js';
 
 const dropzone = document.querySelector('#dropzone');
 const fileInput = document.querySelector('#file-input');
@@ -28,6 +34,8 @@ const status = document.querySelector('#status');
 const statusMessage = document.querySelector('#status-message');
 const statusElapsed = document.querySelector('#status-elapsed');
 const flavourSelect = document.querySelector('#flavour');
+const viewField = document.querySelector('#view-field');
+const viewSelect = document.querySelector('#view');
 const copyButton = document.querySelector('#copy');
 const stopButton = document.querySelector('#stop');
 const retryButton = document.querySelector('#retry');
@@ -69,11 +77,30 @@ let lastResults = [];
 /** True while a conversion is in flight, so Convert cannot be double-fired. */
 let converting = false;
 
-/** Ticks the elapsed counter while converting; cleared on every exit path. */
+/** True while pass 2 is in flight. */
+let merging = false;
+
+/** Ticks the elapsed counter while working; cleared on every exit path. */
 let elapsedTimer = null;
 
 /** Aborts the whole run: both the queue and the requests already in flight. */
 let runAbort = null;
+
+/** Aborts an in-flight merge: Stop, or a change to the pages being merged. */
+let mergeAbort = null;
+
+/**
+ * The merged document from the last completed run, or null.
+ *
+ * Discarded whenever the set of pages changes, so a merge never describes pages
+ * it did not see.
+ *
+ * @type {{ blocks: Array<object>, failures: Array<object> } | null}
+ */
+let mergedDocument = null;
+
+/** Which document is shown — and therefore copied: 'merged' or 'pages'. */
+let view = 'pages';
 
 const FLAVOUR_STORAGE_KEY = 'note-scanner.formula-flavour';
 
@@ -104,6 +131,28 @@ function releasePreview(entry) {
 
 function findById(id) {
   return selection.find((entry) => entry.id === id);
+}
+
+function plural(count, word) {
+  return `${count} ${word}${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * Throw away the merged document, stopping a merge still in flight.
+ *
+ * @returns {boolean} whether a merge was interrupted
+ */
+function discardMerge() {
+  const interrupted = mergeAbort !== null;
+  if (interrupted) {
+    mergeAbort.abort();
+    mergeAbort = null;
+    merging = false;
+    stopElapsed();
+  }
+  mergedDocument = null;
+  view = 'pages';
+  return interrupted;
 }
 
 async function addFiles(fileList) {
@@ -167,11 +216,18 @@ function removeById(id) {
   if (!entry) return;
   releasePreview(entry);
   selection = selection.filter((candidate) => candidate.id !== id);
+
+  // The merge no longer matches the pages, so it goes. The removed page's text
+  // must leave the document too, which is why the Markdown is re-rendered here
+  // and not only the tiles.
+  if (discardMerge()) setStatus('The pages changed, so the merge was discarded.', 'info');
+  renderMarkdown();
   render();
 }
 
 function clearAll() {
   runAbort?.abort();
+  discardMerge();
   selection.forEach(releasePreview);
   selection = [];
   lastRejected = [];
@@ -226,7 +282,7 @@ function renderThumbnails() {
 
     item.append(name, remove);
 
-    if (entry.status === 'failed' && !converting) {
+    if (entry.status === 'failed' && !converting && !merging) {
       const retry = document.createElement('button');
       retry.type = 'button';
       retry.className = 'thumb__retry';
@@ -273,20 +329,24 @@ function render() {
   const pending = selection.some((entry) => entry.pending);
   const failed = selection.filter((entry) => entry.status === 'failed').length;
   const converted = convertedCount();
+  const busy = converting || merging;
 
   counter.textContent = `${selection.length} / ${MAX_IMAGES}`;
   emptyState.hidden = selection.length > 0;
   clearButton.disabled = selection.length === 0 || converting;
   // Nothing may be converted while an image is still being read, or the output
   // would describe images that are not ready.
-  convertButton.disabled = selection.length === 0 || pending || converting;
-  convertButton.textContent = converting ? 'Converting…' : 'Convert';
+  convertButton.disabled = selection.length === 0 || pending || busy;
+  convertButton.textContent = converting ? 'Converting…' : merging ? 'Merging…' : 'Convert';
 
-  stopButton.hidden = !converting;
-  retryButton.hidden = converting || failed === 0;
+  stopButton.hidden = !busy;
+  retryButton.hidden = busy || failed === 0;
   retryButton.textContent = failed === 1 ? 'Retry 1 failed image' : `Retry ${failed} failed images`;
 
   progress.textContent = converting || converted > 0 ? `${converted} / ${selection.length} converted` : '';
+
+  viewField.hidden = mergedDocument === null;
+  viewSelect.value = view;
 }
 
 function setStatus(message, kind = 'info') {
@@ -297,6 +357,7 @@ function setStatus(message, kind = 'info') {
 }
 
 function startElapsed() {
+  stopElapsed();
   const startedAt = Date.now();
   const tick = () => {
     statusElapsed.textContent = `${Math.round((Date.now() - startedAt) / 1000)}s`;
@@ -306,7 +367,7 @@ function startElapsed() {
   elapsedTimer = setInterval(tick, 1000);
 }
 
-/** Must run on every exit path, or a timer outlives its conversion. */
+/** Must run on every exit path, or a timer outlives its work. */
 function stopElapsed() {
   if (elapsedTimer !== null) {
     clearInterval(elapsedTimer);
@@ -316,21 +377,28 @@ function stopElapsed() {
 }
 
 /**
- * Re-render the Markdown from results already in memory.
+ * Re-render the Markdown from what is already in memory.
  *
- * Built from `selection` order, never completion order: with several images in
- * flight at once completions interleave arbitrarily, and page order is the one
- * thing the reader depends on.
+ * The Pages view is built from `selection` order, never completion order: with
+ * several images in flight completions interleave arbitrarily, and page order is
+ * the one thing the reader depends on. The Merged view renders pass 2's blocks,
+ * which come back already in page order.
  */
 function renderMarkdown() {
-  const results = selection
-    .map((entry) =>
-      entry.result ??
-      (entry.status === 'failed' ? { source_image: entry.name, error: entry.error } : null),
-    )
-    .filter(Boolean);
+  let markdown;
 
-  const markdown = resultsToMarkdown(results, formulaFlavour);
+  if (view === 'merged' && mergedDocument) {
+    markdown = mergedToMarkdown(mergedDocument.blocks, mergedDocument.failures, formulaFlavour);
+  } else {
+    const results = selection
+      .map((entry) =>
+        entry.result ??
+        (entry.status === 'failed' ? { source_image: entry.name, error: entry.error } : null),
+      )
+      .filter(Boolean);
+    markdown = resultsToMarkdown(results, formulaFlavour);
+  }
+
   outputMarkdown.textContent = markdown;
   output.hidden = markdown.length === 0;
 }
@@ -375,18 +443,88 @@ async function convertEntry(entry, signal) {
 }
 
 /**
- * Convert a set of images with a bounded number in flight.
+ * Merge the successful pages once a run has finished (pass 2).
+ *
+ * Needs two or more pages. Whatever happens here, the Pages document is already
+ * on screen and correct, so every way this can fail just leaves it there.
+ */
+async function mergeIfPossible() {
+  const pages = selection.filter((entry) => entry.status === 'done' && entry.result);
+  if (pages.length < 2) return;
+
+  const controller = new AbortController();
+  mergeAbort = controller;
+  merging = true;
+  setStatus(`Merging ${plural(pages.length, 'page')}…`, 'busy');
+  startElapsed();
+  render();
+
+  const startedAt = Date.now();
+  const outcome = await mergePages(
+    pages.map((entry) => entry.result),
+    { signal: controller.signal },
+  );
+
+  // A change to the pages discarded this merge and already said so.
+  if (mergeAbort !== controller) return;
+
+  mergeAbort = null;
+  merging = false;
+  stopElapsed();
+  console.log(`merge: finished in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+
+  const failed = selection.filter((entry) => entry.status === 'failed');
+  const failedNote =
+    failed.length > 0 ? ` ${plural(failed.length, 'image')} failed and ${failed.length === 1 ? 'is' : 'are'} marked in the document.` : '';
+
+  if (outcome.cancelled) {
+    setStatus('Merge stopped. Showing pages.', 'info');
+  } else if (!outcome.ok) {
+    setStatus(`Could not merge the pages (${outcome.message}) Showing pages.`, 'error');
+  } else if (!outcome.merged) {
+    setStatus(`${outcome.reason} Showing pages.`, 'info');
+  } else {
+    // A failed page never reached the merge, but its marker still belongs after
+    // the last successful page that came before it in the selection.
+    const position = new Map(selection.map((entry, index) => [entry.id, index]));
+    const mergedPositions = pages.map((entry) => position.get(entry.id));
+    const failures = failed.map((entry) => ({
+      afterPage: mergedPositions.filter((at) => at < position.get(entry.id)).length - 1,
+      source_image: entry.name,
+      error: entry.error,
+    }));
+
+    mergedDocument = { blocks: outcome.blocks, failures };
+    view = 'merged';
+
+    // Never an invisible merge: say what it changed.
+    const changed =
+      outcome.dropped === 0 && outcome.superseded === 0
+        ? 'nothing was repeated across them'
+        : `removed ${plural(outcome.dropped, 'duplicate block')}, completed ${plural(outcome.superseded, 'line')} from a later photo`;
+    setStatus(`Merged ${plural(pages.length, 'page')} — ${changed}.${failedNote}`, failed.length > 0 ? 'error' : 'done');
+  }
+
+  renderMarkdown();
+  render();
+}
+
+/**
+ * Convert a set of images with a bounded number in flight, then merge.
  *
  * @param {Entry[]} queue
  */
 async function runConversion(queue) {
-  if (queue.length === 0 || converting) return;
+  if (queue.length === 0 || converting || merging) return;
 
   const { maxConcurrency } = await fetchRuntimeConfig();
 
+  // A new run changes the pages, so any earlier merge no longer describes them.
+  discardMerge();
+
   converting = true;
   runAbort = new AbortController();
-  setStatus(`Converting ${queue.length} image${queue.length === 1 ? '' : 's'}…`, 'busy');
+  setStatus(`Converting ${plural(queue.length, 'image')}…`, 'busy');
   startElapsed();
   render();
 
@@ -406,19 +544,19 @@ async function runConversion(queue) {
   const done = selection.filter((entry) => entry.status === 'done').length;
 
   if (stopped) {
-    setStatus(`Stopped. ${done} image${done === 1 ? '' : 's'} converted.`, 'info');
+    setStatus(`Stopped. ${plural(done, 'image')} converted.`, 'info');
   } else if (failed > 0) {
-    setStatus(
-      `${done} converted, ${failed} failed. Retry the failed images, or copy what worked.`,
-      'error',
-    );
+    setStatus(`${done} converted, ${failed} failed. Retry the failed images, or copy what worked.`, 'error');
   } else {
-    setStatus(`Converted ${done} image${done === 1 ? '' : 's'}.`, 'done');
+    setStatus(`Converted ${plural(done, 'image')}.`, 'done');
   }
 
   renderMarkdown();
   render();
   if (!output.hidden) output.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  // A stopped run is not merged: the user asked for the work to end.
+  if (!stopped) await mergeIfPossible();
 }
 
 /** Convert everything not already converted, leaving finished work alone. */
@@ -434,6 +572,7 @@ function stopRun() {
   // Aborts the in-flight requests as well as the queue: stopping only the
   // scheduling would leave the browser waiting on requests nobody wants.
   runAbort?.abort();
+  mergeAbort?.abort();
 }
 
 async function copyMarkdown() {
@@ -496,7 +635,13 @@ flavourSelect.value = formulaFlavour;
 flavourSelect.addEventListener('change', () => {
   formulaFlavour = flavourSelect.value;
   saveFlavour(formulaFlavour);
-  // Re-renders from lastResults: no second API call.
+  // Re-renders from memory: no second API call.
+  renderMarkdown();
+});
+
+viewSelect.addEventListener('change', () => {
+  view = viewSelect.value === 'merged' && mergedDocument ? 'merged' : 'pages';
+  // Re-renders from memory, so comparing the two views costs no request.
   renderMarkdown();
 });
 

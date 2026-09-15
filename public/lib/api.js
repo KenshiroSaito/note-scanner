@@ -1,5 +1,5 @@
 /**
- * Client for the extraction backend.
+ * Client for the backend.
  *
  * The frontend is static and holds no API key (spec section 4, decision 2); this
  * module is the only place it talks to the server.
@@ -23,16 +23,6 @@ export const API_BASE = 'http://localhost:8787';
  */
 export const CLIENT_TIMEOUT_MS = 200_000;
 
-/**
- * Send one image for extraction.
- *
- * Returns an outcome object rather than throwing, so the caller has a single
- * path for "didn't work" instead of a try/catch wrapped around rendering.
- *
- * @param {File} file a normalized JPEG from the drop zone
- * @param {{ signal?: AbortSignal }} [options]
- * @returns {Promise<{ ok: true, result: object } | { ok: false, message: string }>}
- */
 /** Falls back to this if /health cannot be reached. */
 export const DEFAULT_MAX_CONCURRENCY = 3;
 
@@ -68,6 +58,37 @@ export async function fetchRuntimeConfig({ refresh = false } = {}) {
   return { maxConcurrency: DEFAULT_MAX_CONCURRENCY };
 }
 
+/**
+ * What a request that never got a response means for the user.
+ *
+ * Cancelled and timed out must not be conflated: work the user stopped goes
+ * back to where it was, while a timeout is a real failure that earns a retry.
+ */
+function networkFailure(error, signal) {
+  if (signal?.aborted || error?.name === 'AbortError') {
+    return { ok: false, cancelled: true, message: 'Cancelled.' };
+  }
+  if (error?.name === 'TimeoutError') {
+    return { ok: false, message: 'The model took too long to respond.' };
+  }
+  // By far the most likely failure: the dev setup is two processes and the
+  // backend is the one people forget.
+  return {
+    ok: false,
+    message: `Could not reach the backend at ${API_BASE}. Is it running? Start it with "npm start".`,
+  };
+}
+
+/**
+ * Send one image for extraction (pass 1).
+ *
+ * Returns an outcome object rather than throwing, so the caller has a single
+ * path for "didn't work" instead of a try/catch wrapped around rendering.
+ *
+ * @param {File} file a normalized JPEG from the drop zone
+ * @param {{ signal?: AbortSignal }} [options]
+ * @returns {Promise<{ ok: true, result: object } | { ok: false, cancelled?: true, message: string }>}
+ */
 export async function extractImage(file, { signal } = {}) {
   const body = new FormData();
   // Field name must match what the backend reads (src/extract.ts).
@@ -81,21 +102,7 @@ export async function extractImage(file, { signal } = {}) {
       signal: signal ?? AbortSignal.timeout(CLIENT_TIMEOUT_MS),
     });
   } catch (error) {
-    // Cancelled and timed out must not be conflated: an image the user stopped
-    // returns to its ready state, while a timeout is a real failure that earns a
-    // retry button.
-    if (signal?.aborted || error?.name === 'AbortError') {
-      return { ok: false, cancelled: true, message: 'Cancelled.' };
-    }
-    if (error?.name === 'TimeoutError') {
-      return { ok: false, message: 'The model took too long to respond.' };
-    }
-    // By far the most likely failure: the dev setup is two processes and the
-    // backend is the one people forget.
-    return {
-      ok: false,
-      message: `Could not reach the backend at ${API_BASE}. Is it running? Start it with "npm start".`,
-    };
+    return networkFailure(error, signal);
   }
 
   if (response.ok) {
@@ -108,10 +115,67 @@ export async function extractImage(file, { signal } = {}) {
 
   // The backend writes its error messages for a human, and guarantees they carry
   // no upstream text, so they are shown as-is.
-  const body_ = await response.json().catch(() => null);
-  if (body_ && typeof body_.error === 'string') {
-    return { ok: false, message: body_.error };
+  const errorBody = await response.json().catch(() => null);
+  if (errorBody && typeof errorBody.error === 'string') {
+    return { ok: false, message: errorBody.error };
   }
 
   return { ok: false, message: `The backend returned HTTP ${response.status}.` };
+}
+
+/**
+ * Merge the pages of a run (pass 2).
+ *
+ * `merged: false` is a normal outcome, not a failure: the backend declined to
+ * merge — too few pages, too much text, nothing usable from the model — and the
+ * page-by-page document is still correct, so the caller keeps showing it.
+ *
+ * @param {Array<object>} pages pass-1 results, in page order
+ * @param {{ signal?: AbortSignal }} [options]
+ * @returns {Promise<
+ *   | { ok: true, merged: true, blocks: Array<object>, dropped: number, superseded: number, rejected: number }
+ *   | { ok: true, merged: false, reason: string }
+ *   | { ok: false, cancelled?: true, message: string }
+ * >}
+ */
+export async function mergePages(pages, { signal } = {}) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE}/merge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pages }),
+      signal: signal ?? AbortSignal.timeout(CLIENT_TIMEOUT_MS),
+    });
+  } catch (error) {
+    return networkFailure(error, signal);
+  }
+
+  const body = await response.json().catch(() => null);
+
+  if (response.ok && body?.merged === true && Array.isArray(body.blocks)) {
+    return {
+      ok: true,
+      merged: true,
+      blocks: body.blocks,
+      dropped: Number(body.dropped) || 0,
+      superseded: Number(body.superseded) || 0,
+      rejected: Number(body.rejected) || 0,
+    };
+  }
+
+  if (response.ok && body?.merged === false) {
+    return { ok: true, merged: false, reason: String(body.reason ?? 'The pages were not merged.') };
+  }
+
+  if (body && typeof body.error === 'string') {
+    return { ok: false, message: body.error };
+  }
+
+  return {
+    ok: false,
+    message: response.ok
+      ? 'The backend returned an unexpected merge response.'
+      : `The backend returned HTTP ${response.status}.`,
+  };
 }

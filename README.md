@@ -6,19 +6,29 @@ See [`docs/spec.md`](docs/spec.md) for the full specification.
 
 ## Status
 
-Phase 4 (multiple images). Drop up to 25 photos, press **Convert**, and get one
-Markdown document you can copy.
+Phase 5 (merging pages). Drop up to 25 photos, press **Convert**, and get one
+Markdown document you can copy, with content repeated across photos removed.
 
 **Frontend** — images are normalized in place on drop: EXIF orientation applied,
 resized to 1568px on the long edge, re-encoded as JPEG. JPEG and PNG input only;
 HEIC is rejected for now, see decision 6 in the spec. Convert runs every selected
 image with a few in flight at once, streaming each result into the document as it
-lands; progress, Stop, and per-image Retry are all live during a run. Formulas can
-be written as LaTeX, Unicode, plain text, or code spans.
+lands; progress, Stop, and per-image Retry are all live during a run. When a run
+finishes with two or more pages they are merged automatically, and a **View**
+select switches between the merged document and the page-by-page one — Copy
+copies whichever is showing. Formulas can be written as LaTeX, Unicode, plain
+text, or code spans.
 
 **Backend** — `POST /extract` takes one image, calls a vision model, and returns
 schema-validated JSON (the shape in spec section 5). Ollama runs it locally by
-default; the Claude API is a drop-in alternative.
+default; the Claude API is a drop-in alternative. `POST /merge` takes the pass-1
+results of a run and merges them in code, with no model call. A block whose words
+already appear in consecutive blocks on an earlier page is dropped, and when a
+later photo of the board contains an earlier block's writing in full — because
+more was written in between — the later text replaces the earlier block where it
+stands. Text is never joined across pages, since nothing proves one fragment
+continues another. Nothing is rewritten, so no text the model read can be lost.
+Decision 3 in the spec explains the design and why pass 2 does not use the model.
 
 Markdown conversion happens in the frontend, not the server (spec section 5).
 

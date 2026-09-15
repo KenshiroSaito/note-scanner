@@ -14,6 +14,13 @@
   box-sizing: border-box;
 }
 
+/* The hidden attribute must beat component display rules. Without this,
+   `.button { display: inline-block }` keeps a hidden button on screen — which is
+   how Stop and Retry stayed visible while idle. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);

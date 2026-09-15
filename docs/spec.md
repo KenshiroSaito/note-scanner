@@ -73,12 +73,51 @@ Returns structured JSON
 ### Decision 3: Two-pass processing
 
 **Pass 1 (per image):** Each image is processed independently into structured
-JSON. Can run in parallel.
-**Pass 2 (whole set):** All pass-1 results are sent to the LLM once and merged.
+JSON by the vision LLM. Can run in parallel.
+**Pass 2 (whole set):** All pass-1 results are merged into one document —
+deterministically, in code, with no LLM call.
 
-**Reason:** A single topic in lecture notes often spans several pages. Simply
-concatenating per-image results produces the same heading three times and leaves
-sentences cut in half. Pass 2 merges duplicate headings and reconnects sentences.
+**Reason:** A single topic in lecture notes often spans several pages, and
+students photograph a board more than once as a lecture goes on. The same writing
+then arrives several times — unchanged, split into blocks differently, or extended
+with more writing. Simply concatenating per-image results repeats whole sections.
+
+**Revised in phase 5 — pass 2 does not use the LLM.** The first implementation
+asked the model to propose merge operations, with code verifying each one before
+applying it. On four real lecture photos, qwen2.5vl:7b proposed 10 operations and
+all 10 failed verification: one would have deleted a formula, and nine were
+impossible joins. The real duplicate — the same MST definition on two photos —
+could not have been expressed anyway, because pass 1 split one copy into five
+blocks and the other into two.
+
+Repeated writing is findable from the words alone, so code finds it, after
+normalising notation so `\sum` and `∑` count as the same word. Two operations,
+each verified before it is applied:
+
+- **Drop** a later block whose words a run of up to four consecutive earlier
+  blocks already covers (at least 80% overlap, at most one word missing).
+- **Supersede** an earlier block with a later run that contains all of its board
+  writing in the same order — a later photo of the same writing, more complete.
+  The later text takes the earlier block's place, so its section stays together.
+  A note the model attached to the earlier block is discarded: it described what
+  the earlier photo showed, and under the completed writing a note such as "the
+  last item is incomplete" would be false rather than merely redundant.
+
+A block under six words is removed only as part of a repeated run, so short generic
+lines such as "Definition" survive. No board writing the model read can be lost.
+
+**Joins were removed.** An earlier version joined a block ending without
+punctuation to a next-page block starting in lower case. On two photos of one board
+taken minutes apart, it glued the unfinished "d[v] should indicate the cost of"
+onto "array π" from the other panel — a sentence on neither board. Punctuation and
+case say nothing about content, and a join that invents a sentence is worse than
+none. The only real evidence that one piece of writing continues another is a later
+block containing both, which supersede already handles. Without that evidence, a
+fragment is left as it is.
+
+**Revisit if:** real use shows repeated content the word check misses, or a
+stronger model (the Claude engine) makes model-proposed merges worth measuring
+again.
 
 ### Decision 4: Backend in Node / TypeScript
 
@@ -183,7 +222,11 @@ Convert one real image and render Markdown. Copy button.
 Up to 25 images, progress display, per-image failure and retry.
 
 **Phase 5 — Pass 2 (merge)**
-Merge duplicate headings, reconnect sentences across pages.
+Remove content repeated across pages (a board photographed more than once), let a
+later photo complete writing an earlier one caught unfinished, and keep the
+page-by-page document available beside the merged one. Deterministic, in code, with
+no model call, and never joining text across pages without evidence — see
+decision 3.
 
 **Phase 6 — Polish**
 Template selection, `.md` download. (Client-side resizing moved to phase 1.)
