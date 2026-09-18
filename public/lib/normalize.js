@@ -8,6 +8,8 @@
  * The geometry and filename helpers are pure and tested; `normalizeImage` needs
  * a DOM and is verified in a browser.
  */
+import { looksLikeHeic } from './heic.js';
+import { isHeic } from './validation.js';
 
 /** Long-edge target in pixels (spec section 6). */
 export const LONG_EDGE = 1568;
@@ -56,16 +58,91 @@ export function normalizedName(name) {
 /**
  * Decode, orient, resize, and re-encode one image.
  *
- * Decoding goes through an `<img>` element rather than `createImageBitmap`
- * because EXIF orientation is then applied by the browser: `image-orientation:
- * from-image` is the CSS initial value, and `drawImage` uses the oriented
- * intrinsic size. `createImageBitmap` needs an `imageOrientation` option that
- * older Safari accepts and ignores, which silently yields sideways images.
+ * The browser's own decoder goes first. It handles JPEG and PNG everywhere, and
+ * HEIC in Safari — so iPhone users never download the WebAssembly decoder. Only a
+ * HEIC the browser cannot read falls back to it.
  *
  * @param {File} file
  * @returns {Promise<File>} a JPEG File
  */
 export async function normalizeImage(file) {
+  try {
+    return await normalizeNatively(file);
+  } catch (nativeError) {
+    if (!(await isHeicFile(file))) throw nativeError;
+    return normalizeHeic(file);
+  }
+}
+
+/** By name or type, or by content for a HEIC saved under the wrong extension. */
+async function isHeicFile(file) {
+  if (isHeic(file)) return true;
+  return looksLikeHeic(new Uint8Array(await file.slice(0, 64).arrayBuffer()));
+}
+
+/** Created on the first HEIC, so the decoder is only downloaded when needed. */
+let heicWorker = null;
+let nextRequestId = 1;
+const pendingRequests = new Map();
+
+function heicDecoder() {
+  if (heicWorker) return heicWorker;
+
+  heicWorker = new Worker(new URL('./heic-worker.js', import.meta.url), { type: 'module' });
+
+  heicWorker.addEventListener('message', ({ data }) => {
+    const pending = pendingRequests.get(data.id);
+    if (!pending) return;
+    pendingRequests.delete(data.id);
+    if (data.error) pending.reject(new Error(data.error));
+    else pending.resolve(data.blob);
+  });
+
+  // Fires when the worker itself could not load, not for a bad file: fail
+  // everything waiting and start a fresh worker next time.
+  heicWorker.addEventListener('error', (event) => {
+    const error = new Error(event.message || 'The HEIC decoder could not start.');
+    for (const pending of pendingRequests.values()) pending.reject(error);
+    pendingRequests.clear();
+    heicWorker?.terminate();
+    heicWorker = null;
+  });
+
+  return heicWorker;
+}
+
+/**
+ * Decode a HEIC in the worker, which resizes and encodes it too.
+ *
+ * libheif applies the file's own rotation while decoding, so the result is
+ * already upright.
+ */
+async function normalizeHeic(file) {
+  const bytes = await file.arrayBuffer();
+  const worker = heicDecoder();
+  const id = nextRequestId++;
+
+  const blob = await new Promise((resolve, reject) => {
+    pendingRequests.set(id, { resolve, reject });
+    worker.postMessage({ id, bytes }, [bytes]);
+  });
+
+  return new File([blob], normalizedName(file.name), {
+    type: 'image/jpeg',
+    lastModified: file.lastModified ?? Date.now(),
+  });
+}
+
+/**
+ * The browser's own decoder.
+ *
+ * Decoding goes through an `<img>` element rather than `createImageBitmap`
+ * because EXIF orientation is then applied by the browser: `image-orientation:
+ * from-image` is the CSS initial value, and `drawImage` uses the oriented
+ * intrinsic size. `createImageBitmap` needs an `imageOrientation` option that
+ * older Safari accepts and ignores, which silently yields sideways images.
+ */
+async function normalizeNatively(file) {
   const sourceUrl = URL.createObjectURL(file);
   const image = new Image();
   image.src = sourceUrl;

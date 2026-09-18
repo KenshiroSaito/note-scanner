@@ -123,6 +123,58 @@ export async function extractImage(file, { signal } = {}) {
   return { ok: false, message: `The backend returned HTTP ${response.status}.` };
 }
 
+/** At most one warm-up per minute: a 25-file drop is one request, not 25. */
+export const WARMUP_INTERVAL_MS = 60_000;
+
+let lastWarmUpAt = -Infinity;
+let warmUpInFlight = null;
+
+/**
+ * Ask the backend to load the model before the first conversion needs it.
+ *
+ * Called when images are added, so the cold load of a local model happens while
+ * the user is still choosing photos. Never throws and is safe to call often:
+ * calls inside the interval, or while one is in flight, return `skipped`.
+ *
+ * @param {{ now?: number }} [options] the current time, injectable for tests
+ * @returns {Promise<
+ *   | { ok: true, skipped: true }
+ *   | { ok: true, warmed: boolean, seconds: number }
+ *   | { ok: false, message: string }
+ * >}
+ */
+export function warmUpModel({ now = Date.now() } = {}) {
+  if (warmUpInFlight || now - lastWarmUpAt < WARMUP_INTERVAL_MS) {
+    return Promise.resolve({ ok: true, skipped: true });
+  }
+  lastWarmUpAt = now;
+
+  warmUpInFlight = (async () => {
+    try {
+      const response = await fetch(`${API_BASE}/warmup`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(CLIENT_TIMEOUT_MS),
+      });
+      const body = await response.json().catch(() => null);
+
+      if (response.ok) {
+        return { ok: true, warmed: body?.warmed === true, seconds: Number(body?.seconds) || 0 };
+      }
+      lastWarmUpAt = -Infinity;
+      return { ok: false, message: typeof body?.error === 'string' ? body.error : `HTTP ${response.status}` };
+    } catch {
+      // Not worth a message: if the backend is down, Convert says so clearly.
+      // Forget the attempt so the next added image tries again.
+      lastWarmUpAt = -Infinity;
+      return { ok: false, message: 'Could not reach the backend.' };
+    } finally {
+      warmUpInFlight = null;
+    }
+  })();
+
+  return warmUpInFlight;
+}
+
 /**
  * Merge the pages of a run (pass 2).
  *

@@ -8,7 +8,7 @@
  * - deciding body text from doodles is the reason for using an LLM at all
  *   (section 4, decision 1)
  * - `unreadable` exists so the model can decline; it must never guess (section 5)
- * - formulas are transcribed as LaTeX (section 8, resolved)
+ * - formulas are transcribed as LaTeX (section 4, decision 8)
  */
 import { BLOCK_TYPES } from './schema.ts';
 

@@ -21,7 +21,7 @@
         aria-labelledby="dropzone-heading"
       >
         <h2 id="dropzone-heading" class="dropzone__heading">Drop images here</h2>
-        <p class="dropzone__hint">JPEG or PNG — up to 25 per run.</p>
+        <p class="dropzone__hint">JPEG, PNG, or HEIC — up to 25 per run.</p>
         <label class="button">
           Choose images
           <input
@@ -29,7 +29,7 @@
             class="visually-hidden"
             type="file"
             multiple
-            accept="image/jpeg,image/png,.jpg,.jpeg,.png"
+            accept="image/jpeg,image/png,image/heic,image/heif,.jpg,.jpeg,.png,.heic,.heif"
           />
         </label>
       </section>
@@ -79,6 +79,14 @@
               </select>
             </label>
             <label class="field">
+              Template
+              <select id="template" class="select">
+                <option value="lecture">Lecture notes</option>
+                <option value="practice">Practice questions</option>
+                <option value="freeform">Freeform</option>
+              </select>
+            </label>
+            <label class="field">
               Formulas
               <select id="flavour" class="select">
                 <option value="latex">LaTeX ($$)</option>
@@ -88,6 +96,7 @@
               </select>
             </label>
             <button id="copy" class="button" type="button">Copy</button>
+            <button id="download" class="button" type="button">Download .md</button>
           </div>
         </div>
         <pre id="output-markdown" class="output__markdown"></pre>

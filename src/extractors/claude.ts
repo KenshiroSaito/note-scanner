@@ -15,6 +15,7 @@ import {
   type Extractor,
   type Generate,
   type GenerateRequest,
+  type Warmup,
 } from './types.ts';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
@@ -115,6 +116,11 @@ export function createClaudeGenerate(config: Config): Generate {
 
     return parseJsonLoosely(text);
   };
+}
+
+/** A hosted API has no model to load, so there is nothing to warm. */
+export function createClaudeWarmup(): Warmup {
+  return async () => ({ warmed: false });
 }
 
 export function createClaudeExtractor(config: Config): Extractor {

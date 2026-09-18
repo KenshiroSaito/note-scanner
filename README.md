@@ -6,18 +6,24 @@ See [`docs/spec.md`](docs/spec.md) for the full specification.
 
 ## Status
 
-Phase 5 (merging pages). Drop up to 25 photos, press **Convert**, and get one
-Markdown document you can copy, with content repeated across photos removed.
+Phase 6 (polish). Drop up to 25 photos — JPEG, PNG, or HEIC — press **Convert**,
+and get one Markdown document you can copy or download, with content repeated
+across photos removed.
 
 **Frontend** — images are normalized in place on drop: EXIF orientation applied,
-resized to 1568px on the long edge, re-encoded as JPEG. JPEG and PNG input only;
-HEIC is rejected for now, see decision 6 in the spec. Convert runs every selected
+resized to 1568px on the long edge, re-encoded as JPEG. HEIC is read by the
+browser where it can (Safari) and otherwise by a vendored libheif in a worker,
+loaded only when the first HEIC arrives — see decision 6 in the spec. Adding
+images also asks the backend to load the model, so the first conversion does not
+wait for it. Convert runs every selected
 image with a few in flight at once, streaming each result into the document as it
 lands; progress, Stop, and per-image Retry are all live during a run. When a run
 finishes with two or more pages they are merged automatically, and a **View**
-select switches between the merged document and the page-by-page one — Copy
-copies whichever is showing. Formulas can be written as LaTeX, Unicode, plain
-text, or code spans.
+select switches between the merged document and the page-by-page one. A
+**Template** select (Lecture notes, Practice questions, Freeform) and a
+**Formulas** select (LaTeX, Unicode, plain text, code spans) change how it is
+written out, re-rendering without another model call. **Copy** and **Download
+.md** both take exactly what is showing.
 
 **Backend** — `POST /extract` takes one image, calls a vision model, and returns
 schema-validated JSON (the shape in spec section 5). Ollama runs it locally by
@@ -29,6 +35,8 @@ more was written in between — the later text replaces the earlier block where 
 stands. Text is never joined across pages, since nothing proves one fragment
 continues another. Nothing is rewritten, so no text the model read can be lost.
 Decision 3 in the spec explains the design and why pass 2 does not use the model.
+`POST /warmup` loads the model ahead of the first image; with the Claude engine
+there is nothing to load and it answers `{ "warmed": false }`.
 
 Markdown conversion happens in the frontend, not the server (spec section 5).
 

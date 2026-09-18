@@ -19,22 +19,18 @@ export const MAX_IMAGES = 25;
  */
 export const MAX_SOURCE_BYTES = 40 * 1024 * 1024;
 
-/** MIME types we can decode in-browser. */
-export const ACCEPTED_TYPES = ['image/jpeg', 'image/png'];
-
-/** Extensions used when a browser reports no MIME type. */
-const ACCEPTED_EXTENSIONS = ['.jpg', '.jpeg', '.png'];
-
 /**
- * HEIC is recognised only so it can be refused by name.
- *
- * Chrome and Firefox have no HEIC decoder, so supporting it needs libheif via
- * WASM — deferred to its own task (spec section 4, decision 6). Until then the
- * format iPhones shoot by default deserves a message that says so, rather than
- * a generic "unsupported format".
+ * HEIC is what iPhones shoot by default. Safari decodes it natively; elsewhere
+ * normalize.js falls back to a vendored libheif (spec section 4, decision 6).
  */
 const HEIC_TYPES = ['image/heic', 'image/heif'];
 const HEIC_EXTENSIONS = ['.heic', '.heif'];
+
+/** MIME types we can decode in-browser. */
+export const ACCEPTED_TYPES = ['image/jpeg', 'image/png', ...HEIC_TYPES];
+
+/** Extensions used when a browser reports no MIME type. */
+const ACCEPTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', ...HEIC_EXTENSIONS];
 
 const MEGABYTE = 1024 * 1024;
 
@@ -72,19 +68,11 @@ export function isHeic(file) {
  * @returns {{ ok: true } | { ok: false, reason: string, message: string }}
  */
 export function checkFile(file) {
-  // Checked before the generic type test so the message names the format.
-  if (isHeic(file)) {
-    return {
-      ok: false,
-      reason: 'heic-unsupported',
-      message: 'HEIC is not supported yet — export or convert to JPEG first.',
-    };
-  }
   if (!isAcceptedType(file)) {
     return {
       ok: false,
       reason: 'unsupported-type',
-      message: 'Unsupported format. Use JPEG or PNG.',
+      message: 'Unsupported format. Use JPEG, PNG, or HEIC.',
     };
   }
   if (!file.size) {

@@ -391,6 +391,9 @@ body {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  /* Three selects and two buttons do not fit a phone's width on one row, and an
+     unwrapped row widens the whole page. */
+  flex-wrap: wrap;
 }
 
 .field {
