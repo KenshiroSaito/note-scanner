@@ -43,6 +43,9 @@ gets back clean, structured Markdown.
 
 ## 4. Architecture decisions
 
+Decisions forced by a problem found along the way — what was tried, what failed,
+and the evidence — are logged in [`decisions.md`](decisions.md).
+
 ### Decision 1: Use a vision LLM, not in-browser OCR
 
 **Reason:** The core of this feature is not reading characters — it is deciding
@@ -120,7 +123,7 @@ fragment is left as it is.
 
 **Revisit if:** real use shows repeated content the word check misses, or a
 stronger model (the Claude engine) makes model-proposed merges worth measuring
-again.
+again. The evidence behind each change is in [the decisions log](decisions.md).
 
 ### Decision 4: Backend in Node / TypeScript
 
@@ -205,7 +208,8 @@ pointer to the photo, which would lose most of a maths lecture.
 
 - LaTeX appears only in `formula` blocks. The prompt asks for that, and because a
   7B model cannot hold the rule reliably, code enforces it after validation
-  (`src/normalize-blocks.ts`).
+  (`src/normalize-blocks.ts`). See [the decisions log](decisions.md) for the
+  prompt that regressed.
 - LaTeX renders in some note apps and not others, so how a formula is written is
   chosen at render time: LaTeX `$$` (Obsidian, Notion; the default), Unicode
   (`∑ ⊆`, which looks like the board anywhere), plain text (Apple Notes), or code
@@ -216,8 +220,10 @@ pointer to the photo, which would lose most of a maths lecture.
 **Decision:** the browser converts `MAX_CONCURRENCY` images at a time — 3 by
 default, capped at 16 so a typo cannot flood a local model.
 
-**Reason:** a full 25-image run takes about twenty minutes sequentially, and 3 at
-once measured 2.7× faster than sequential on six images in phase 4. How many
+**Reason:** a full 25-image run takes about twenty minutes sequentially. 3 is a
+reasonable default, not a measured optimum. The only measurement of limits 1–4 ran them in order, so only the first
+paid the cold model load, which confounds the comparison. A clean re-measurement is
+open in section 8, and [the decisions log](decisions.md) has the details. How many
 parallel requests a machine sustains before it degrades depends on the machine, so
 the limit is configuration rather than a constant.
 
@@ -339,6 +345,9 @@ to phase 1.)
   Compare on free tier and cold start
 - **Who pays** — Use my own API key for everyone, or have users supply their own?
   Required decision before publishing
+- **Concurrency default** — Re-measure `MAX_CONCURRENCY` 1–4 on the same photos,
+  with the model warm before every run. The first measurement was confounded by the
+  cold load (decision 9)
 
 Resolved and moved to section 4: local model accuracy (decision 7), formulas
 (decision 8), and template granularity (decision 10).
