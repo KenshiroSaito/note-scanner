@@ -11,8 +11,7 @@ structured Markdown.
   Practice questions, Freeform) and four formula styles (LaTeX, Unicode, plain,
   code) change the output without re-running the model.
 
-<!-- Screenshot: add docs/screenshot.png and embed it here. -->
-_Screenshot to come._
+![Three lecture photos converted and merged into one document, with a later photo completing a line from an earlier one](docs/screenshot.png)
 
 ## Run it locally
 
@@ -42,8 +41,8 @@ Checks: `npm test` and `npm run typecheck`.
 
 ## AI-assisted workflow
 
-Built with [Claude Code](https://claude.com/claude-code), one phase at a time. Each
-phase was planned first, and no code was written until I approved the plan. Each
+Built with [Claude Code](https://claude.com/claude-code), one phase at a time.
+Planning was reviewed and approved before implementation on the main phases. Each
 phase lived on its own branch and landed as its own pull request. Ground rules
 (branching, no secrets in source, tests with every change, asking before adding
 dependencies) are in [`CLAUDE.md`](CLAUDE.md).
@@ -55,7 +54,7 @@ How the output was verified:
   photos, misreadings included.
 - **End to end:** runs against real photos and a live Ollama, and headless Chrome
   for the HEIC path.
-- **By hand:** I checked each phase in the browser before merging.
+- **By hand:** browser verification was part of each phase's checklist.
 
 When evidence overturned a plan, it's recorded in
 [`docs/decisions.md`](docs/decisions.md). The full design is in
