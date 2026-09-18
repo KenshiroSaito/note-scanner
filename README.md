@@ -1,91 +1,62 @@
 # note-scanner
 
-Web app that converts photos of class notes into structured Markdown.
+Turns photos of whiteboards, slides, and handwritten class notes into clean,
+structured Markdown.
 
-See [`docs/spec.md`](docs/spec.md) for the full specification.
+- Drop up to 25 photos: JPEG, PNG, or HEIC straight off an iPhone.
+- A vision model transcribes each one. It ignores circles, arrows, and doodles, and
+  marks what it can't read instead of guessing.
+- Writing repeated across photos (a board shot more than once) appears once.
+- Copy the result or download it as `.md`. Three templates (Lecture notes,
+  Practice questions, Freeform) and four formula styles (LaTeX, Unicode, plain,
+  code) change the output without re-running the model.
 
-## Status
+<!-- Screenshot: add docs/screenshot.png and embed it here. -->
+_Screenshot to come._
 
-Phase 6 (polish). Drop up to 25 photos — JPEG, PNG, or HEIC — press **Convert**,
-and get one Markdown document you can copy or download, with content repeated
-across photos removed.
+## Run it locally
 
-**Frontend** — images are normalized in place on drop: EXIF orientation applied,
-resized to 1568px on the long edge, re-encoded as JPEG. HEIC is read by the
-browser where it can (Safari) and otherwise by a vendored libheif in a worker,
-loaded only when the first HEIC arrives — see decision 6 in the spec. Adding
-images also asks the backend to load the model, so the first conversion does not
-wait for it. Convert runs every selected
-image with a few in flight at once, streaming each result into the document as it
-lands; progress, Stop, and per-image Retry are all live during a run. When a run
-finishes with two or more pages they are merged automatically, and a **View**
-select switches between the merged document and the page-by-page one. A
-**Template** select (Lecture notes, Practice questions, Freeform) and a
-**Formulas** select (LaTeX, Unicode, plain text, code spans) change how it is
-written out, re-rendering without another model call. **Copy** and **Download
-.md** both take exactly what is showing.
-
-**Backend** — `POST /extract` takes one image, calls a vision model, and returns
-schema-validated JSON (the shape in spec section 5). Ollama runs it locally by
-default; the Claude API is a drop-in alternative. `POST /merge` takes the pass-1
-results of a run and merges them in code, with no model call. A block whose words
-already appear in consecutive blocks on an earlier page is dropped, and when a
-later photo of the board contains an earlier block's writing in full — because
-more was written in between — the later text replaces the earlier block where it
-stands. Text is never joined across pages, since nothing proves one fragment
-continues another. Nothing is rewritten, so no text the model read can be lost.
-Decision 3 in the spec explains the design and why pass 2 does not use the model.
-`POST /warmup` loads the model ahead of the first image; with the Claude engine
-there is nothing to load and it answers `{ "warmed": false }`.
-
-Markdown conversion happens in the frontend, not the server (spec section 5).
-
-## Development
-
-Requires Node 22 or newer (Node runs the TypeScript directly — there is no build
-step). Install once with `npm install`.
+Needs Node 22+ and [Ollama](https://ollama.com) with the default model:
 
 ```sh
-npm test        # run the test suite
-npm run typecheck   # tsc --noEmit
-npm run serve   # frontend: serve public/ at http://localhost:8000
-npm start       # backend:  API at http://localhost:8787
-npm run dev     # backend, restarting on change
+ollama pull qwen2.5vl:7b
+npm install
+npm start          # backend, http://localhost:8787
+npm run serve      # frontend, http://localhost:8000 (second terminal)
 ```
 
-**Using the app needs both processes**: run `npm start` and `npm run serve` in
-separate terminals, then open <http://localhost:8000>. If Convert reports that it
-cannot reach the backend, `npm start` is the one that is missing.
+Then open <http://localhost:8000>. To use the Claude API instead of Ollama, copy
+`.env.example` to `.env` and set `EXTRACTOR=claude` and `ANTHROPIC_API_KEY`.
+Checks: `npm test` and `npm run typecheck`.
 
-The frontend must be served over HTTP rather than opened as a `file://` URL,
-because ES module imports are blocked on `file://` (and the clipboard needs a
-secure context, which `localhost` provides and `file://` does not).
+## Architecture
 
-The backend address is a constant in `public/lib/api.js`. The frontend has no
-build step and no environment variables, so deploying it somewhere else means
-editing that line — revisited when the hosting question in spec section 8 is
-settled.
+- **Frontend:** static HTML/JS with no build step. It normalises each photo
+  (orientation, 1568px, JPEG; HEIC via a vendored libheif) and renders Markdown.
+- **Backend:** Node/TypeScript (Hono, Zod). It holds the API key; the browser never
+  sees it.
+- `POST /extract`: one image → schema-validated JSON, with one retry.
+- `POST /merge`: removes repeated writing across pages, deterministically, with no
+  model call.
+- `POST /warmup`: loads the model before the first image needs it.
 
-### Backend configuration
+## AI-assisted workflow
 
-All configuration comes from the environment; copy `.env.example` to `.env` and
-fill in what you need. `.env` is gitignored, and no key is ever written to a
-source file.
+Built with [Claude Code](https://claude.com/claude-code), one phase at a time. Each
+phase was planned first, and no code was written until I approved the plan. Each
+phase lived on its own branch and landed as its own pull request. Ground rules
+(branching, no secrets in source, tests with every change, asking before adding
+dependencies) are in [`CLAUDE.md`](CLAUDE.md).
 
-The default path needs no configuration at all: it expects Ollama on
-`localhost:11434` with `qwen2.5vl:7b` pulled. To use the Claude API instead, set
-`EXTRACTOR=claude` and `ANTHROPIC_API_KEY`; the key is required only in that case.
+How the output was verified:
 
-Check it end to end with a real photo:
+- **Tests and types:** `node --test` and `tsc` on every commit.
+- **Real data:** fixtures are pass-1 output captured verbatim from real lecture
+  photos, misreadings included.
+- **End to end:** runs against real photos and a live Ollama, and headless Chrome
+  for the HEIC path.
+- **By hand:** I checked each phase in the browser before merging.
 
-```sh
-curl -sS -F image=@your-photo.jpg http://localhost:8787/extract
-```
-
-Expect this to take 30–120 seconds on a local 7B vision model — hence the
-generous `REQUEST_TIMEOUT_MS` default. The browser converts `MAX_CONCURRENCY`
-images at once (default 3), which measured 2.7x faster than sequential on six
-images; change it with `MAX_CONCURRENCY=2 npm start` and watch the per-image
-timings in the browser console. Responses are `200` with the validated
-result, `400` for a bad request, `502` when the model is unreachable or returned
-unusable output twice, and `504` on timeout.
+When evidence overturned a plan, it's recorded in
+[`docs/decisions.md`](docs/decisions.md). The full design is in
+[`docs/spec.md`](docs/spec.md).
